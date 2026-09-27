@@ -1,0 +1,7 @@
+services:
+  scrum-master-bot:
+    build: .
+    container_name: scrum-master-bot
+    restart: unless-stopped
+    env_file:
+      - .env
