@@ -1,30 +1,37 @@
 # Scrum Master Bot
 
-Discord Scrum-Master-Bot für das Hauptprojekt. Der Bot führt das Team durch ein interaktives Daily Scrum mit vier Pflichtfragen, erinnert werktags an noch nicht vollständig abgegebene Dailies, erinnert am Tagesende ans Committen/Pushen und erstellt aus den Daily-Einträgen einen strukturierten Wochenbericht.
+Discord Scrum-Master-Bot für das Hauptprojekt. Der Bot führt das Team durch ein interaktives Daily Scrum mit vier Pflichtfragen, erinnert werktags an fehlende Dailies, erinnert am Tagesende ans Committen/Pushen und erstellt freitags automatisch einen Wochenbericht.
 
 ## Bot hinzufügen
 
 [➕ Scrum Master zu einem Discord-Server hinzufügen](https://discord.com/oauth2/authorize?client_id=1553772454835392642&permissions=326417599552&integration_type=0&scope=bot+applications.commands)
 
-> Der Bot hat **keinen Zugriff auf das private Hauptprojekt-GitHub-Repository** und versucht daher ausdrücklich nicht, Commits oder Branches zu verifizieren. Git-Hinweise sind reine Workflow-Erinnerungen.
+> Der Bot hat **keinen Zugriff auf das private Hauptprojekt-GitHub-Repository**. Git-Hinweise sind reine Workflow-Erinnerungen.
 
-## Daily-Struktur im Discord-Forum
+## Daily-Struktur
 
-Im Forum `daily-scrum` gibt es dauerhaft nur drei persönliche Sammelposts:
+Jedes Teammitglied besitzt ein eigenes Discord-Forum:
 
-- `Joline Daily Scrums`
-- `David Daily Scrums`
-- `Duy Daily Scrums`
+- Joline
+- David
+- Duy
 
-Der Bot erstellt fehlende Sammelposts beim Start automatisch. Ein fertiges Daily erzeugt **keinen neuen Forum-Post** mehr, sondern wird als neue Nachricht in den persönlichen Sammelpost geschrieben.
+Nach einem vollständig beantworteten Q&A erstellt der Bot im jeweiligen persönlichen Forum **einen neuen Post für den aktuellen Tag**.
 
-Beispiel:
+Beispiele:
 
 ```text
-Joline Daily Scrums
-├── Daily Scrum · 28.09.2026
-├── Daily Scrum · 29.09.2026
-├── Daily Scrum · 30.09.2026
+Joline-Forum
+├── Daily Scrum Joline 28.09.2026
+├── Daily Scrum Joline 29.09.2026
+└── ...
+
+David-Forum
+├── Daily Scrum David 28.09.2026
+└── ...
+
+Duy-Forum
+├── Daily Scrum Duy 28.09.2026
 └── ...
 ```
 
@@ -45,30 +52,37 @@ Der Bot führt jeden Benutzer nacheinander durch genau vier Pflichtfragen:
    - aktueller Branch
    - danach Buttons `Ja` / `Nein`, ob noch etwas committed oder gepusht werden muss
 
-Nach Frage 4 erhält der Benutzer eine **private Vorschau** mit den Buttons:
+Danach erhält der Benutzer eine **private Vorschau** mit:
 
 - `Daily absenden`
 - `Bearbeiten`
 - `Abbrechen`
 
-Erst nach **Daily absenden** wird der Eintrag in den persönlichen Sammelpost geschrieben. Ein angefangenes, aber nicht abgesendetes Q&A zählt **nicht** als abgegeben und die Person wird weiterhin erinnert.
+Erst nach **Daily absenden** gilt das Daily als vollständig. Der Bot prüft dann, ob für diesen Benutzer heute bereits ein vollständiger Daily-Post existiert. Falls nicht, erstellt er den neuen Post im richtigen persönlichen Forum.
 
-## Funktionen
+## Erinnerungen
 
-- interaktives Daily-Q&A mit Buttons und Eingabefeldern
-- vier Pflichtfragen pro Daily
-- drei dauerhafte persönliche Daily-Sammelposts
-- private Vorschau vor dem Absenden
-- Daily-Scrum-Tracking Montag bis Freitag
-- Erinnerungen um 11:00 und 11:45 Uhr, Deadline um 12:00 Uhr
-- Abschlussstatus um 12:00 Uhr
-- Git-/Branch-Erinnerung um 16:30 Uhr
-- gezielte Erinnerung, wenn im Daily `Noch zu pushen: Ja` steht
-- automatischer Wochenbericht freitags um 15:00 Uhr
-- Wochenbericht liest die Dailies direkt aus den drei persönlichen Sammelposts
-- Slash Commands für Status, Daily-Assistent, Vorlage, Wochenberichte und Tests
-- Docker-Unterstützung
-- Zeitzone `Europe/Berlin`
+- 09:00 Uhr: Daily-Runde mit Button wird eröffnet
+- 11:00 Uhr: nur fehlende Personen werden gepingt
+- 11:45 Uhr: letzte Erinnerung
+- 12:00 Uhr: Abschlussstatus mit 0/3 bis 3/3
+- 16:30 Uhr: Git-/Push-Erinnerung
+
+Ein begonnenes, aber nicht abgesendetes Q&A zählt **nicht** als Daily.
+
+## Wochenbericht
+
+Freitags um **14:00 Uhr** erstellt der Bot automatisch einen Wochenbericht im Wochenberichte-Forum.
+
+Dafür liest er die vollständigen Daily-Posts aus allen drei persönlichen Foren für die aktuelle Woche ein und gruppiert die Inhalte nach:
+
+- Joline
+- David
+- Duy
+- dokumentierten Blockern
+- aktuellem Stand / nächsten Schritten
+
+Längere Berichte werden automatisch auf mehrere Discord-Nachrichten aufgeteilt.
 
 ## Daily-Vorlage
 
@@ -93,19 +107,45 @@ Keine
 
 Der Bot erwartet:
 
-- ein Forum für `daily-scrum`, darin die drei persönlichen Sammelposts
+- ein persönliches Daily-Forum für Joline
+- ein persönliches Daily-Forum für David
+- ein persönliches Daily-Forum für Duy
 - ein Forum für `wochenberichte`
 - einen normalen Textkanal für Scrum-Master-Meldungen
 
-Die Kanal- und Benutzer-IDs werden über `.env` gesetzt.
+Die Zuordnung erfolgt über `.env`.
+
+## Benötigte Umgebungsvariablen
+
+```env
+DISCORD_TOKEN=
+DISCORD_GUILD_ID=
+WEEKLY_REPORT_FORUM_ID=
+SCRUM_MASTER_CHANNEL_ID=
+
+JOLINE_DISCORD_ID=
+JOLINE_DAILY_FORUM_ID=
+DAVID_DISCORD_ID=
+DAVID_DAILY_FORUM_ID=
+DUY_DISCORD_ID=
+DUY_DAILY_FORUM_ID=
+
+TIMEZONE=Europe/Berlin
+DAILY_OPEN_CRON=0 9 * * 1-5
+DAILY_REMINDER_CRON=0 11 * * 1-5
+DAILY_FINAL_REMINDER_CRON=45 11 * * 1-5
+DAILY_DEADLINE_CRON=0 12 * * 1-5
+GIT_REMINDER_CRON=30 16 * * 1-5
+WEEKLY_REPORT_CRON=0 14 * * 5
+```
 
 ## Einrichtung
 
 1. Repository klonen.
 2. `.env.example` nach `.env` kopieren.
-3. Discord-Bot-Token und Channel-/User-IDs eintragen.
-4. Im Discord Developer Portal den **Server Members Intent** und **Message Content Intent** aktivieren.
-5. Bot mit den Scopes `bot` und `applications.commands` einladen.
+3. Discord-Bot-Token sowie Channel- und User-IDs eintragen.
+4. Im Discord Developer Portal **Server Members Intent** und **Message Content Intent** aktivieren.
+5. Bot mit `bot` und `applications.commands` einladen.
 6. Der Bot benötigt mindestens: View Channels, Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Add Reactions und Embed Links.
 7. `npm install`
 8. `npm run check`
@@ -115,7 +155,7 @@ Die Kanal- und Benutzer-IDs werden über `.env` gesetzt.
 
 Im Repository liegt `scripts/start-bot.sh`. Das Script:
 
-- findet das Repository automatisch relativ zu sich selbst
+- findet das Repository relativ zu sich selbst
 - lädt NVM, falls Node darüber installiert wurde
 - installiert Abhängigkeiten nur, wenn `node_modules` fehlt
 - baut den Bot mit `npm run build`
@@ -142,60 +182,41 @@ Logs ansehen:
 tail -f logs/bot.log
 ```
 
-Zum Testen muss nicht neu gebootet werden:
-
-```bash
-./scripts/start-bot.sh
-```
-
-## Docker
-
-```bash
-cp .env.example .env
-# .env ausfüllen
-docker compose up -d --build
-```
-
 ## Slash Commands
 
 - `/daily` – startet den interaktiven Daily-Assistenten
 - `/scrum status` – heutiger Abgabestatus
-- `/scrum heute` – zeigt den aktuellen Daily-Status
-- `/bot struktur` – zeigt privat die Copy-Paste-Vorlage
+- `/scrum heute` – heutiger Abgabestatus
+- `/bot struktur` – private Copy-Paste-Vorlage
 - `/bot status` – Bot-/Konfigurationsstatus
-- `/wochenbericht vorschau` – Vorschau für die aktuelle Woche
-- `/wochenbericht erstellen` – Bericht jetzt als Entwurf erzeugen
-- `/wochenbericht freigeben` – neuesten Entwurf freigeben
-- `/test` → `Daily Start` – 09-Uhr-Nachricht mit Button testen
-- `/test` → `Daily Reminder` – Erinnerung testen
-- `/test` → `Daily Deadline` – 12-Uhr-Abschluss testen
-- `/test` → `Git Reminder` – Feierabend-Git-Erinnerung testen
-- `/test` → `Weekly Report` – Wochenbericht testen
-
-Die `/test`-Befehle sind auf Mitglieder mit `Server verwalten` beschränkt.
+- `/wochenbericht vorschau` – Wochenbericht als private Vorschau
+- `/wochenbericht erstellen` – Wochenbericht sofort erstellen
+- `/wochenbericht freigeben` – neuesten Wochenbericht freigeben
+- `/test` → `Daily Start`
+- `/test` → `Daily Reminder`
+- `/test` → `Daily Deadline`
+- `/test` → `Git Reminder`
+- `/test` → `Weekly Report`
 
 ## Zeitplan
 
 | Uhrzeit | Aktion |
 |---|---|
-| 09:00 | Daily-Runde mit `Daily ausfüllen`-Button eröffnet |
-| 11:00 | Unvollständige Dailies werden erinnert |
+| 09:00 | Daily-Runde mit `Daily ausfüllen`-Button |
+| 11:00 | Fehlende Personen werden erinnert |
 | 11:45 | Letzte Erinnerung |
 | 12:00 | Daily-Abschlussstatus |
+| 14:00 Freitag | Wochenbericht als Entwurf |
 | 16:30 | Git-/Branch-Erinnerung |
-| Freitag 15:00 | Wochenbericht als Entwurf |
 
-## Entwicklung
+## TODO
 
-```bash
-npm run check
-npm run build
-npm start
-```
+- Meetings in Voice Channels
+- Meeting-Tracking und mögliche Zusammenfassungen, sobald die Voice-Channel-Struktur feststeht
 
 ## Datenschutz / Secrets
 
-Der Bot benötigt nur Discord-Daten aus dem konfigurierten Server. Tokens und IDs gehören in `.env`; `.env` wird nicht committed. Unfertige Daily-Q&A-Sitzungen liegen nur temporär im Arbeitsspeicher des Bots und werden erst beim finalen Absenden in den persönlichen Sammelpost geschrieben. Es gibt keine GitHub-API-Integration und keine externe Datenbank.
+Tokens gehören ausschließlich in `.env`; `.env` wird nicht committed. Unfertige Daily-Q&A-Sitzungen liegen nur temporär im Arbeitsspeicher. Es gibt keine GitHub-API-Integration und keine externe Datenbank.
 
 ## Lizenz
 
