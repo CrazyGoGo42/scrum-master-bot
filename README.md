@@ -18,8 +18,6 @@ Jedes Teammitglied besitzt ein eigenes Discord-Forum:
 
 Nach einem vollständig beantworteten Q&A erstellt der Bot im jeweiligen persönlichen Forum **einen neuen Post für den aktuellen Tag**.
 
-Beispiele:
-
 ```text
 Joline-Forum
 ├── Daily Scrum Joline 28.09.2026
@@ -34,6 +32,25 @@ Duy-Forum
 ├── Daily Scrum Duy 28.09.2026
 └── ...
 ```
+
+Die Zuordnung erfolgt **nicht anhand des Channels, in dem `/daily` ausgeführt wird**, sondern anhand der Discord-User-ID. `/daily` kann deshalb beispielsweise auch in `#general` gestartet werden.
+
+- Joline → Joline-Forum
+- David → David-Forum
+- Duy → Duy-Forum
+- andere Discord-IDs → keine Berechtigung
+
+## Zugriffssteuerung
+
+Die Funktionen `/daily`, `/scrum`, `/bot` und `/wochenbericht` sind nur für die drei in `.env` konfigurierten Teammitglieder nutzbar. Auch die Buttons und Modals des Daily-Q&A prüfen die Discord-ID erneut.
+
+Nicht bekannte Benutzer erhalten nur eine private Meldung:
+
+```text
+⛔ Du gehörst nicht zum konfigurierten Projektteam und hast für diese Funktion keine Zuständigkeit.
+```
+
+Die gleichen Regeln gelten für die manuellen Wochenbericht-Befehle. Der automatische Wochenbericht am Freitag läuft unabhängig davon über den Bot selbst.
 
 ## Interaktives Daily Scrum
 
@@ -58,17 +75,19 @@ Danach erhält der Benutzer eine **private Vorschau** mit:
 - `Bearbeiten`
 - `Abbrechen`
 
-Erst nach **Daily absenden** gilt das Daily als vollständig. Der Bot prüft dann, ob für diesen Benutzer heute bereits ein vollständiger Daily-Post existiert. Falls nicht, erstellt er den neuen Post im richtigen persönlichen Forum.
+Erst nach **Daily absenden** gilt das Daily als vollständig. Beim finalen Absenden prüft der Bot nur das persönliche Forum des aktuellen Benutzers. Eine fehlerhafte Forum-ID eines anderen Teammitglieds blockiert das eigene Daily daher nicht mehr.
 
 ## Erinnerungen
 
 - 09:00 Uhr: Daily-Runde mit Button wird eröffnet
 - 11:00 Uhr: nur fehlende Personen werden gepingt
 - 11:45 Uhr: letzte Erinnerung
-- 12:00 Uhr: Abschlussstatus mit 0/3 bis 3/3
+- 12:00 Uhr: Abschlussstatus
 - 16:30 Uhr: Git-/Push-Erinnerung
 
 Ein begonnenes, aber nicht abgesendetes Q&A zählt **nicht** als Daily.
+
+Falls eines der drei Daily-Foren falsch konfiguriert oder nicht erreichbar ist, bleibt der Bot online. `/bot status` zeigt dann das betroffene Forum als Fehler an.
 
 ## Wochenbericht
 
@@ -82,7 +101,7 @@ Dafür liest er die vollständigen Daily-Posts aus allen drei persönlichen Fore
 - dokumentierten Blockern
 - aktuellem Stand / nächsten Schritten
 
-Längere Berichte werden automatisch auf mehrere Discord-Nachrichten aufgeteilt.
+Ist ein Daily-Forum nicht erreichbar, wird das im Bericht für das betreffende Teammitglied kenntlich gemacht, statt den kompletten Bericht abzubrechen. Längere Berichte werden automatisch auf mehrere Discord-Nachrichten aufgeteilt.
 
 ## Daily-Vorlage
 
@@ -188,7 +207,7 @@ tail -f logs/bot.log
 - `/scrum status` – heutiger Abgabestatus
 - `/scrum heute` – heutiger Abgabestatus
 - `/bot struktur` – private Copy-Paste-Vorlage
-- `/bot status` – Bot-/Konfigurationsstatus
+- `/bot status` – Bot-/Konfigurationsstatus inklusive Forum-Prüfung
 - `/wochenbericht vorschau` – Wochenbericht als private Vorschau
 - `/wochenbericht erstellen` – Wochenbericht sofort erstellen
 - `/wochenbericht freigeben` – neuesten Wochenbericht freigeben
