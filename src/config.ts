@@ -9,7 +9,6 @@ function required(name: string): string {
 export const config = {
   token: required('DISCORD_TOKEN'),
   guildId: required('DISCORD_GUILD_ID'),
-  dailyForumId: required('DAILY_SCRUM_FORUM_ID'),
   weeklyForumId: required('WEEKLY_REPORT_FORUM_ID'),
   scrumChannelId: required('SCRUM_MASTER_CHANNEL_ID'),
   timezone: process.env.TIMEZONE || 'Europe/Berlin',
@@ -19,11 +18,23 @@ export const config = {
     dailyFinalReminder: process.env.DAILY_FINAL_REMINDER_CRON || '45 11 * * 1-5',
     dailyDeadline: process.env.DAILY_DEADLINE_CRON || '0 12 * * 1-5',
     gitReminder: process.env.GIT_REMINDER_CRON || '30 16 * * 1-5',
-    weeklyReport: process.env.WEEKLY_REPORT_CRON || '0 15 * * 5'
+    weeklyReport: process.env.WEEKLY_REPORT_CRON || '0 14 * * 5'
   },
   members: [
-    { name: 'Joline', discordId: required('JOLINE_DISCORD_ID') },
-    { name: 'David', discordId: required('DAVID_DISCORD_ID') },
-    { name: 'Duy', discordId: required('DUY_DISCORD_ID') }
+    {
+      name: 'Joline',
+      discordId: required('JOLINE_DISCORD_ID'),
+      dailyForumId: required('JOLINE_DAILY_FORUM_ID')
+    },
+    {
+      name: 'David',
+      discordId: required('DAVID_DISCORD_ID'),
+      dailyForumId: required('DAVID_DAILY_FORUM_ID')
+    },
+    {
+      name: 'Duy',
+      discordId: required('DUY_DISCORD_ID'),
+      dailyForumId: required('DUY_DAILY_FORUM_ID')
+    }
   ]
 } as const;
