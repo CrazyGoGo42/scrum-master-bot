@@ -1,5 +1,9 @@
 import cron from 'node-cron';
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChannelType,
   ChatInputCommandInteraction,
   Client,
@@ -8,9 +12,13 @@ import {
   GatewayIntentBits,
   GuildMember,
   MessageFlags,
+  ModalBuilder,
+  ModalSubmitInteraction,
   PermissionFlagsBits,
   SlashCommandBuilder,
   TextChannel,
+  TextInputBuilder,
+  TextInputStyle,
   ThreadChannel
 } from 'discord.js';
 import { DateTime } from 'luxon';
@@ -24,6 +32,30 @@ type DailyEntry = {
   createdAt: DateTime;
   content: string;
 };
+
+type DailyDraft = {
+  userId: string;
+  previous?: string;
+  today?: string;
+  blocker?: string;
+  branch?: string;
+  pushPending?: string;
+};
+
+const drafts = new Map<string, DailyDraft>();
+
+const DAILY_TEMPLATE = `## Seit dem letzten Daily
+- Was habe ich seit dem letzten Daily gemacht?
+
+## Heute
+- Was mache ich heute?
+
+## Blocker
+Keine
+
+## Branch / Git
+- Branch: feature/mein-feature
+- Noch zu pushen: Ja`;
 
 const client = new Client({
   intents: [
@@ -44,6 +76,94 @@ function isTeamMember(id: string): boolean {
 
 function toBerlin(date: Date): DateTime {
   return DateTime.fromJSDate(date).setZone(config.timezone);
+}
+
+function dailyStartRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('daily:start')
+      .setLabel('Daily ausfüllen')
+      .setEmoji('📝')
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
+function nextButton(customId: string, label: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(customId).setLabel(label).setStyle(ButtonStyle.Primary)
+  );
+}
+
+function blockerButtons(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('daily:blocker-none').setLabel('Keine Blocker').setEmoji('✅').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('daily:blocker-yes').setLabel('Blocker eintragen').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
+  );
+}
+
+function previewButtons(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('daily:submit').setLabel('Daily absenden').setEmoji('✅').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('daily:edit').setLabel('Bearbeiten').setEmoji('✏️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('daily:cancel').setLabel('Abbrechen').setEmoji('✖️').setStyle(ButtonStyle.Danger)
+  );
+}
+
+function textarea(id: string, label: string, placeholder: string, value?: string): ActionRowBuilder<TextInputBuilder> {
+  const input = new TextInputBuilder()
+    .setCustomId(id)
+    .setLabel(label)
+    .setPlaceholder(placeholder)
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(1000);
+  if (value) input.setValue(value);
+  return new ActionRowBuilder<TextInputBuilder>().addComponents(input);
+}
+
+function shortInput(id: string, label: string, placeholder: string, value?: string): ActionRowBuilder<TextInputBuilder> {
+  const input = new TextInputBuilder()
+    .setCustomId(id)
+    .setLabel(label)
+    .setPlaceholder(placeholder)
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(200);
+  if (value) input.setValue(value);
+  return new ActionRowBuilder<TextInputBuilder>().addComponents(input);
+}
+
+function questionOneModal(draft?: DailyDraft): ModalBuilder {
+  const monday = nowBerlin().weekday === 1;
+  const label = monday ? 'Was hast du Freitag / am Wochenende gemacht?' : 'Was hast du gestern gemacht?';
+  return new ModalBuilder()
+    .setCustomId('daily:q1')
+    .setTitle('Daily Scrum • Frage 1/4')
+    .addComponents(textarea('answer', label, 'Kurz und konkret: Was hast du erledigt?', draft?.previous));
+}
+
+function questionTwoModal(draft?: DailyDraft): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId('daily:q2')
+    .setTitle('Daily Scrum • Frage 2/4')
+    .addComponents(textarea('answer', 'Was wirst du heute machen?', 'Welche Aufgaben stehen heute an?', draft?.today));
+}
+
+function blockerModal(draft?: DailyDraft): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId('daily:q3')
+    .setTitle('Daily Scrum • Frage 3/4')
+    .addComponents(textarea('answer', 'Welche Probleme oder Blocker hast du?', 'Was hält dich aktuell auf?', draft?.blocker === 'Keine' ? undefined : draft?.blocker));
+}
+
+function questionFourModal(draft?: DailyDraft): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId('daily:q4')
+    .setTitle('Daily Scrum • Frage 4/4')
+    .addComponents(
+      shortInput('branch', 'An welchem Branch arbeitest du?', 'z. B. feature/login', draft?.branch),
+      shortInput('push', 'Musst du noch etwas pushen? (Ja/Nein)', 'Ja oder Nein', draft?.pushPending)
+    );
 }
 
 async function getForum(id: string): Promise<ForumChannel> {
@@ -81,6 +201,32 @@ async function starterContent(thread: ThreadChannel): Promise<string> {
   }
 }
 
+function section(content: string, names: string[]): string[] {
+  const escaped = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const regex = new RegExp(`(?:^|\\n)#{1,3}\\s*(?:${escaped})\\s*\\n([\\s\\S]*?)(?=\\n#{1,3}\\s|$)`, 'i');
+  const match = content.match(regex);
+  if (!match) return [];
+  return match[1]
+    .split('\n')
+    .map((line) => line.replace(/^[-*]\s*/, '').trim())
+    .filter(Boolean);
+}
+
+function participantId(thread: ThreadChannel, content: string): string | null {
+  if (thread.ownerId && isTeamMember(thread.ownerId)) return thread.ownerId;
+  const match = content.match(/\*\*Teilnehmer:\*\*\s*<@!?(\d+)>/i);
+  return match && isTeamMember(match[1]) ? match[1] : null;
+}
+
+function isCompleteDailyContent(content: string): boolean {
+  return (
+    section(content, ['Seit dem letzten Daily', 'Gestern']).length > 0 &&
+    section(content, ['Heute']).length > 0 &&
+    section(content, ['Blocker']).length > 0 &&
+    section(content, ['Branch / Git', 'Git', 'Branch']).length > 0
+  );
+}
+
 async function dailyEntriesForDate(date = nowBerlin()): Promise<DailyEntry[]> {
   const forum = await getForum(config.dailyForumId);
   const threads = await allForumThreads(forum);
@@ -88,16 +234,13 @@ async function dailyEntriesForDate(date = nowBerlin()): Promise<DailyEntry[]> {
   const entries: DailyEntry[] = [];
 
   for (const thread of threads) {
-    if (!thread.ownerId || !isTeamMember(thread.ownerId) || !thread.createdAt) continue;
+    if (!thread.createdAt) continue;
     const createdAt = toBerlin(thread.createdAt);
     if (createdAt.toISODate() !== dateKey) continue;
-    entries.push({
-      thread,
-      ownerId: thread.ownerId,
-      ownerName: memberName(thread.ownerId),
-      createdAt,
-      content: await starterContent(thread)
-    });
+    const content = await starterContent(thread);
+    const ownerId = participantId(thread, content);
+    if (!ownerId || !isCompleteDailyContent(content)) continue;
+    entries.push({ thread, ownerId, ownerName: memberName(ownerId), createdAt, content });
   }
 
   return entries.sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
@@ -110,16 +253,13 @@ async function dailyEntriesForWeek(date = nowBerlin()): Promise<DailyEntry[]> {
   const entries: DailyEntry[] = [];
 
   for (const thread of threads) {
-    if (!thread.ownerId || !isTeamMember(thread.ownerId) || !thread.createdAt) continue;
+    if (!thread.createdAt) continue;
     const createdAt = toBerlin(thread.createdAt);
     if (createdAt < start || createdAt > end) continue;
-    entries.push({
-      thread,
-      ownerId: thread.ownerId,
-      ownerName: memberName(thread.ownerId),
-      createdAt,
-      content: await starterContent(thread)
-    });
+    const content = await starterContent(thread);
+    const ownerId = participantId(thread, content);
+    if (!ownerId || !isCompleteDailyContent(content)) continue;
+    entries.push({ thread, ownerId, ownerName: memberName(ownerId), createdAt, content });
   }
 
   return entries.sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
@@ -137,9 +277,10 @@ function mentionList(ids: string[]): string {
 async function sendDailyOpen(): Promise<void> {
   if (!isWorkday()) return;
   const channel = await getScrumChannel();
-  await channel.send(
-    `☕ **Daily Scrum gestartet · ${formatDate()}**\nBitte erstellt euren heutigen Daily Scrum bis spätestens **12:00 Uhr** im Daily-Scrum-Forum.`
-  );
+  await channel.send({
+    content: `☕ **Daily Scrum gestartet · ${formatDate()}**\nBeantwortet die vier kurzen Fragen und sendet euer Daily bis spätestens **12:00 Uhr** ab.`,
+    components: [dailyStartRow()]
+  });
 }
 
 async function sendDailyReminder(final = false): Promise<void> {
@@ -150,8 +291,14 @@ async function sendDailyReminder(final = false): Promise<void> {
   const channel = await getScrumChannel();
   const mentions = mentionList(missing.map((member) => member.discordId));
   const title = final ? '⏰ **15 Minuten bis zur Daily-Deadline**' : '📋 **Daily-Scrum Erinnerung**';
-  const ending = final ? 'euer Daily fehlt noch. Deadline ist **12:00 Uhr**.' : 'euer Daily Scrum fehlt heute noch. Deadline ist **12:00 Uhr**.';
-  await channel.send(`${title}\n${mentions} ${ending}`);
+  const ending = final
+    ? 'euer Daily ist noch nicht vollständig. Deadline ist **12:00 Uhr**.'
+    : 'euer Daily Scrum ist noch nicht vollständig. Bitte beantwortet alle vier Fragen bis **12:00 Uhr**.';
+  await channel.send({
+    content: `${title}\n${mentions} ${ending}`,
+    components: [dailyStartRow()],
+    allowedMentions: { users: missing.map((member) => member.discordId) }
+  });
 }
 
 async function sendDailyDeadline(): Promise<void> {
@@ -163,13 +310,10 @@ async function sendDailyDeadline(): Promise<void> {
 
   const lines = config.members.map((member) => {
     const entry = latestByOwner.get(member.discordId);
-    return entry
-      ? `✅ **${member.name}** · ${formatTime(entry.createdAt)} Uhr`
-      : `❌ **${member.name}** · nicht abgegeben`;
+    return entry ? `✅ **${member.name}** · ${formatTime(entry.createdAt)} Uhr` : `❌ **${member.name}** · nicht vollständig abgegeben`;
   });
-  const count = latestByOwner.size;
   await channel.send(
-    `### Daily Scrum · ${formatDate()}\n${lines.join('\n')}\n\n**Vollständigkeit: ${count}/${config.members.length}**`
+    `### Daily Scrum · ${formatDate()}\n${lines.join('\n')}\n\n**Vollständigkeit: ${latestByOwner.size}/${config.members.length}**`
   );
 }
 
@@ -184,26 +328,16 @@ async function sendGitReminder(): Promise<void> {
   const channel = await getScrumChannel();
 
   if (pending.length > 0) {
-    await channel.send(
-      `💾 **Git-Check zum Feierabend**\n${mentionList(pending)} ihr habt im Daily angegeben, dass noch etwas zu pushen ist. Falls die Arbeit für heute fertig ist: sinnvoll committen und euren Branch pushen.`
-    );
+    await channel.send({
+      content: `💾 **Git-Check zum Feierabend**\n${mentionList(pending)} ihr habt im Daily angegeben, dass noch etwas zu pushen ist. Falls die Arbeit für heute fertig ist: sinnvoll committen und euren Branch pushen.`,
+      allowedMentions: { users: pending }
+    });
     return;
   }
 
   await channel.send(
     '💾 **Git-Check zum Feierabend**\nFalls ihr heute am Code gearbeitet habt: Änderungen sinnvoll committen, euren aktuellen Branch pushen und kurz prüfen, ob nichts Wichtiges nur lokal herumliegt.'
   );
-}
-
-function section(content: string, names: string[]): string[] {
-  const escaped = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  const regex = new RegExp(`(?:^|\\n)#{1,3}\\s*(?:${escaped})\\s*\\n([\\s\\S]*?)(?=\\n#{1,3}\\s|$)`, 'i');
-  const match = content.match(regex);
-  if (!match) return [];
-  return match[1]
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean);
 }
 
 function containsBlocker(content: string): boolean {
@@ -222,7 +356,7 @@ function buildWeeklyReport(entries: DailyEntry[], date = nowBerlin()): string {
     `**Zeitraum:** ${formatDate(start)} – ${formatDate(friday)}`,
     '',
     '## Zusammenfassung',
-    'Der folgende Bericht wurde automatisch aus den im Daily-Scrum-Forum dokumentierten Tätigkeiten erstellt und sollte vor der Weitergabe kurz geprüft werden.',
+    'Der folgende Bericht wurde automatisch aus den vollständig abgegebenen Daily Scrums erstellt und sollte vor der Weitergabe kurz geprüft werden.',
     ''
   ];
 
@@ -230,16 +364,14 @@ function buildWeeklyReport(entries: DailyEntry[], date = nowBerlin()): string {
     const memberEntries = entries.filter((entry) => entry.ownerId === member.discordId);
     report.push(`## ${member.name}`);
     if (memberEntries.length === 0) {
-      report.push('- Für diese Woche wurden keine Daily-Scrum-Einträge gefunden.', '');
+      report.push('- Für diese Woche wurden keine vollständigen Daily-Scrum-Einträge gefunden.', '');
       continue;
     }
     for (const entry of memberEntries) {
       const done = section(entry.content, ['Seit dem letzten Daily', 'Gestern']);
       const today = section(entry.content, ['Heute']);
-      const activities = [...done, ...today];
       report.push(`**${entry.createdAt.toFormat('cccc, dd.MM.')}**`);
-      if (activities.length) activities.forEach((item) => report.push(`- ${item}`));
-      else report.push(`- Daily dokumentiert: ${entry.thread.name}`);
+      [...done, ...today].forEach((item) => report.push(`- ${item}`));
     }
     report.push('');
   }
@@ -277,27 +409,80 @@ async function weeklyReportJob(): Promise<void> {
   await channel.send(`📋 **Der Wochenbericht wurde als Entwurf erstellt.**\nBitte kurz prüfen: <#${thread.id}>`);
 }
 
+function linesAsBullets(value: string): string {
+  return value
+    .split('\n')
+    .map((line) => line.replace(/^[-*]\s*/, '').trim())
+    .filter(Boolean)
+    .map((line) => `- ${line}`)
+    .join('\n');
+}
+
+function normalizeYesNo(value: string): string {
+  return /^(ja|yes|j|true|y)$/i.test(value.trim()) ? 'Ja' : 'Nein';
+}
+
+function draftContent(draft: DailyDraft): string {
+  return `**Teilnehmer:** <@${draft.userId}>\n\n## Seit dem letzten Daily\n${linesAsBullets(draft.previous ?? '')}\n\n## Heute\n${linesAsBullets(draft.today ?? '')}\n\n## Blocker\n${draft.blocker === 'Keine' ? 'Keine' : linesAsBullets(draft.blocker ?? '')}\n\n## Branch / Git\n- Branch: ${draft.branch}\n- Noch zu pushen: ${normalizeYesNo(draft.pushPending ?? 'Nein')}`;
+}
+
+function previewText(draft: DailyDraft): string {
+  return `### Vorschau deines Daily Scrums\n\n${draftContent(draft)}\n\nWenn alles passt, kannst du das Daily jetzt absenden.`;
+}
+
+async function alreadySubmitted(userId: string): Promise<DailyEntry | undefined> {
+  const entries = await dailyEntriesForDate();
+  return entries.find((entry) => entry.ownerId === userId);
+}
+
+async function startDailyForInteraction(interaction: ChatInputCommandInteraction | ButtonInteraction): Promise<void> {
+  if (!isTeamMember(interaction.user.id)) {
+    await interaction.reply({ content: 'Dieser Daily-Assistent ist nur für das konfigurierte Projektteam.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const existing = await alreadySubmitted(interaction.user.id);
+  if (existing) {
+    await interaction.reply({ content: `✅ Dein Daily für heute ist bereits vollständig abgegeben: <#${existing.thread.id}>`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const draft = drafts.get(interaction.user.id) ?? { userId: interaction.user.id };
+  drafts.set(interaction.user.id, draft);
+  await interaction.showModal(questionOneModal(draft));
+}
+
+async function createDailyFromDraft(draft: DailyDraft): Promise<ThreadChannel> {
+  const forum = await getForum(config.dailyForumId);
+  return forum.threads.create({
+    name: `${memberName(draft.userId)} | ${formatDate()}`,
+    message: { content: draftContent(draft), allowedMentions: { parse: [] } },
+    reason: `Daily Scrum von ${memberName(draft.userId)}`
+  });
+}
+
 async function validateDailyThread(thread: ThreadChannel): Promise<void> {
-  if (thread.parentId !== config.dailyForumId || !thread.ownerId || !isTeamMember(thread.ownerId)) return;
+  if (thread.parentId !== config.dailyForumId || thread.ownerId === client.user?.id) return;
+  if (!thread.ownerId || !isTeamMember(thread.ownerId)) return;
   const content = await starterContent(thread);
-  const today = section(content, ['Heute']);
-  const blockers = section(content, ['Blocker']);
-  const git = section(content, ['Branch / Git', 'Git', 'Branch']);
-  const hints: string[] = [];
-  if (today.length === 0) hints.push('der Abschnitt **Heute**');
-  if (blockers.length === 0) hints.push('der Abschnitt **Blocker**');
-  if (git.length === 0) hints.push('der optionale Abschnitt **Branch / Git**');
+  const missing: string[] = [];
+  if (section(content, ['Seit dem letzten Daily', 'Gestern']).length === 0) missing.push('**Seit dem letzten Daily**');
+  if (section(content, ['Heute']).length === 0) missing.push('**Heute**');
+  if (section(content, ['Blocker']).length === 0) missing.push('**Blocker**');
+  if (section(content, ['Branch / Git', 'Git', 'Branch']).length === 0) missing.push('**Branch / Git**');
 
   const starter = await thread.fetchStarterMessage().catch(() => null);
-  if (starter) await starter.react('✅').catch(() => undefined);
-  if (hints.length > 0) {
-    await thread.send(`✅ Daily erfasst. Hinweis: Es fehlt ${hints.join(', ')}. Das Daily zählt trotzdem als abgegeben.`);
+  if (missing.length === 0) {
+    if (starter) await starter.react('✅').catch(() => undefined);
+    await thread.send('✅ Daily vollständig erfasst.');
   } else {
-    await thread.send('✅ Daily erfasst.');
+    if (starter) await starter.react('⚠️').catch(() => undefined);
+    await thread.send(`⚠️ Das Daily ist **noch nicht vollständig** und zählt deshalb noch nicht als abgegeben. Es fehlt: ${missing.join(', ')}.\n\nAm einfachsten: Nutze im Scrum-Master-Channel den Button **Daily ausfüllen**.`);
   }
 }
 
 const commands = [
+  new SlashCommandBuilder()
+    .setName('daily')
+    .setDescription('Startet deinen interaktiven Daily-Scrum-Assistenten'),
   new SlashCommandBuilder()
     .setName('scrum')
     .setDescription('Daily-Scrum Funktionen')
@@ -309,7 +494,11 @@ const commands = [
     .addSubcommand((sub) => sub.setName('vorschau').setDescription('Zeigt eine Vorschau des aktuellen Wochenberichts'))
     .addSubcommand((sub) => sub.setName('erstellen').setDescription('Erstellt den Wochenbericht jetzt'))
     .addSubcommand((sub) => sub.setName('freigeben').setDescription('Markiert den neuesten Wochenbericht als freigegeben')),
-  new SlashCommandBuilder().setName('bot').setDescription('Bot-Funktionen').addSubcommand((sub) => sub.setName('status').setDescription('Zeigt den Bot-Status')),
+  new SlashCommandBuilder()
+    .setName('bot')
+    .setDescription('Bot-Funktionen')
+    .addSubcommand((sub) => sub.setName('status').setDescription('Zeigt den Bot-Status'))
+    .addSubcommand((sub) => sub.setName('struktur').setDescription('Zeigt dir privat die Daily-Scrum-Vorlage zum Kopieren')),
   new SlashCommandBuilder()
     .setName('test')
     .setDescription('Testet geplante Bot-Aktionen')
@@ -320,6 +509,7 @@ const commands = [
         .setDescription('Welche Aktion soll getestet werden?')
         .setRequired(true)
         .addChoices(
+          { name: 'Daily Start', value: 'daily-start' },
           { name: 'Daily Reminder', value: 'daily-reminder' },
           { name: 'Daily Deadline', value: 'daily-deadline' },
           { name: 'Git Reminder', value: 'git-reminder' },
@@ -333,20 +523,30 @@ async function replyDailyStatus(interaction: ChatInputCommandInteraction): Promi
   const latest = new Map(entries.map((entry) => [entry.ownerId, entry]));
   const lines = config.members.map((member) => {
     const entry = latest.get(member.discordId);
-    return entry ? `✅ ${member.name} · ${formatTime(entry.createdAt)} Uhr` : `⏳ ${member.name} · fehlt noch`;
+    return entry ? `✅ ${member.name} · ${formatTime(entry.createdAt)} Uhr` : `⏳ ${member.name} · noch nicht vollständig`;
   });
   await interaction.reply({ content: `### Daily-Status · ${formatDate()}\n${lines.join('\n')}`, flags: MessageFlags.Ephemeral });
 }
 
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (interaction.commandName === 'daily') {
+    await startDailyForInteraction(interaction);
+    return;
+  }
+
   if (interaction.commandName === 'scrum') {
     await replyDailyStatus(interaction);
     return;
   }
 
   if (interaction.commandName === 'bot') {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'struktur') {
+      await interaction.reply({ content: `### Daily-Scrum Vorlage\n\n\`\`\`md\n${DAILY_TEMPLATE}\n\`\`\`\nAlternativ kannst du einfach **/daily** verwenden und die vier Fragen interaktiv beantworten.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
     await interaction.reply({
-      content: `🟢 **Scrum Master ist online**\nDaily-Scrum: ✅\nWochenberichte: ✅\nTeammitglieder: ${config.members.length}/${config.members.length}\nZeitzone: ${config.timezone}`,
+      content: `🟢 **Scrum Master ist online**\nDaily-Scrum Q&A: ✅\nWochenberichte: ✅\nTeammitglieder: ${config.members.length}/${config.members.length}\nZeitzone: ${config.timezone}`,
       flags: MessageFlags.Ephemeral
     });
     return;
@@ -390,6 +590,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     }
     const action = interaction.options.getString('aktion', true);
     await interaction.reply({ content: `Teste **${action}** …`, flags: MessageFlags.Ephemeral });
+    if (action === 'daily-start') await sendDailyOpen();
     if (action === 'daily-reminder') await sendDailyReminder(false);
     if (action === 'daily-deadline') await sendDailyDeadline();
     if (action === 'git-reminder') await sendGitReminder();
@@ -397,10 +598,125 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
   }
 }
 
+async function handleButton(interaction: ButtonInteraction): Promise<void> {
+  if (interaction.customId === 'daily:start') {
+    await startDailyForInteraction(interaction);
+    return;
+  }
+
+  if (!interaction.customId.startsWith('daily:')) return;
+  const draft = drafts.get(interaction.user.id);
+  if (!draft) {
+    await interaction.reply({ content: 'Deine Daily-Sitzung ist abgelaufen. Starte sie bitte erneut mit **/daily**.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (interaction.customId === 'daily:next-q2') {
+    await interaction.showModal(questionTwoModal(draft));
+    return;
+  }
+  if (interaction.customId === 'daily:blocker-none') {
+    draft.blocker = 'Keine';
+    await interaction.showModal(questionFourModal(draft));
+    return;
+  }
+  if (interaction.customId === 'daily:blocker-yes') {
+    await interaction.showModal(blockerModal(draft));
+    return;
+  }
+  if (interaction.customId === 'daily:next-q4') {
+    await interaction.showModal(questionFourModal(draft));
+    return;
+  }
+  if (interaction.customId === 'daily:edit') {
+    await interaction.showModal(questionOneModal(draft));
+    return;
+  }
+  if (interaction.customId === 'daily:cancel') {
+    drafts.delete(interaction.user.id);
+    await interaction.update({ content: 'Daily abgebrochen. Es wurde nichts veröffentlicht.', components: [] });
+    return;
+  }
+  if (interaction.customId === 'daily:submit') {
+    await interaction.deferUpdate();
+    const existing = await alreadySubmitted(interaction.user.id);
+    if (existing) {
+      drafts.delete(interaction.user.id);
+      await interaction.editReply({ content: `✅ Dein Daily ist bereits abgegeben: <#${existing.thread.id}>`, components: [] });
+      return;
+    }
+    const thread = await createDailyFromDraft(draft);
+    drafts.delete(interaction.user.id);
+    await interaction.editReply({
+      content: `✅ **Daily vollständig abgegeben!**\nDein Eintrag wurde veröffentlicht: <#${thread.id}>`,
+      components: []
+    });
+  }
+}
+
+async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
+  if (!interaction.customId.startsWith('daily:')) return;
+  const draft = drafts.get(interaction.user.id) ?? { userId: interaction.user.id };
+  drafts.set(interaction.user.id, draft);
+
+  if (interaction.customId === 'daily:q1') {
+    draft.previous = interaction.fields.getTextInputValue('answer').trim();
+    await interaction.reply({
+      content: `✅ **Frage 1/4 beantwortet**\n\n**Deine Antwort:**\n${draft.previous}\n\nWeiter mit Frage 2:`,
+      components: [nextButton('daily:next-q2', 'Weiter zu Frage 2')],
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  if (interaction.customId === 'daily:q2') {
+    draft.today = interaction.fields.getTextInputValue('answer').trim();
+    await interaction.reply({
+      content: `✅ **Frage 2/4 beantwortet**\n\n**Deine Antwort:**\n${draft.today}\n\n### Frage 3/4\nHast du aktuell Probleme oder Blocker?`,
+      components: [blockerButtons()],
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  if (interaction.customId === 'daily:q3') {
+    draft.blocker = interaction.fields.getTextInputValue('answer').trim();
+    await interaction.reply({
+      content: `✅ **Frage 3/4 beantwortet**\n\n**Blocker:**\n${draft.blocker}\n\nWeiter mit der letzten Frage:`,
+      components: [nextButton('daily:next-q4', 'Weiter zu Frage 4')],
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  if (interaction.customId === 'daily:q4') {
+    draft.branch = interaction.fields.getTextInputValue('branch').trim();
+    draft.pushPending = normalizeYesNo(interaction.fields.getTextInputValue('push'));
+    if (!draft.previous || !draft.today || !draft.blocker || !draft.branch || !draft.pushPending) {
+      await interaction.reply({ content: 'Es fehlen noch Antworten. Starte das Daily bitte erneut mit **/daily**.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.reply({
+      content: previewText(draft),
+      components: [previewButtons()],
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] }
+    });
+  }
+}
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Scrum Master online als ${readyClient.user.tag}`);
-  const guild = await client.guilds.fetch(config.guildId);
-  await guild.commands.set(commands);
+  console.log(`Bot User ID: ${readyClient.user.id}`);
+
+  try {
+    const guild = await client.guilds.fetch(config.guildId);
+    await guild.commands.set(commands);
+    console.log(`Slash Commands auf ${guild.name} registriert.`);
+  } catch (error) {
+    console.error(`Server ${config.guildId} konnte nicht geladen werden. Prüfe Server-ID und Bot-Einladung.`, error);
+    return;
+  }
 
   cron.schedule(config.cron.dailyOpen, () => void sendDailyOpen().catch(console.error), { timezone: config.timezone });
   cron.schedule(config.cron.dailyReminder, () => void sendDailyReminder(false).catch(console.error), { timezone: config.timezone });
@@ -413,6 +729,8 @@ client.once(Events.ClientReady, async (readyClient) => {
 client.on(Events.ThreadCreate, (thread) => void validateDailyThread(thread).catch(console.error));
 client.on(Events.InteractionCreate, (interaction) => {
   if (interaction.isChatInputCommand()) void handleCommand(interaction).catch(console.error);
+  if (interaction.isButton()) void handleButton(interaction).catch(console.error);
+  if (interaction.isModalSubmit()) void handleModal(interaction).catch(console.error);
 });
 
 client.login(config.token);
