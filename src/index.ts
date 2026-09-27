@@ -86,6 +86,11 @@ const PUSH_REMINDER_MARKER = '🔔 **Push-Erinnerung**';
 const PUSH_DONE_MARKER = '**Push-Status:** ✅ Erledigt';
 const ABSENCE_CANCELLED_MARKER = '**Abmeldung aufgehoben:**';
 const SICKNESS_INTRANET_URL = 'https://intranet.bib.de/tiki-index.php?page=welcome';
+const TRACKING_START = DateTime.fromISO(config.trackingStartDate, { zone: config.timezone }).startOf('day');
+
+if (!TRACKING_START.isValid) {
+  throw new Error(`Ungültiges TRACKING_START_DATE: ${config.trackingStartDate}`);
+}
 
 const client = new Client({
   intents: [
@@ -664,7 +669,7 @@ async function sendDailyReminder(evening = false): Promise<void> {
 
 async function reportMissingDailies(): Promise<void> {
   const target = nowBerlin().minus({ days: 1 }).startOf('day');
-  if (!isWorkday(target)) return;
+  if (!isWorkday(target) || target < TRACKING_START) return;
 
   const dailyScan = await scanDailyEntriesInRange(target.startOf('day'), target.endOf('day'));
   const absenceScan = await scanAbsencesInRange(target.startOf('day'), target.endOf('day'));
@@ -679,16 +684,18 @@ async function reportMissingDailies(): Promise<void> {
   for (const member of missing) {
     lines.push(`❌ **${member.name}** · für diesen Arbeitstag liegt weder ein Daily noch eine Abmeldung vor.`);
 
-    try {
-      const previousDailies = await dailyEntriesForMemberInRange(member, previous.startOf('day'), previous.endOf('day'));
-      const previousAbsences = await absenceEntriesForMemberInRange(member, previous.startOf('day'), previous.endOf('day'));
-      if (previousDailies.length === 0 && previousAbsences.length === 0) {
-        lines.push(
-          `⚠️ **${member.name}** · damit seit **2 Arbeitstagen in Folge** ohne Daily oder Abmeldung. Diese Inaktivität wird dokumentiert.`
-        );
+    if (previous >= TRACKING_START) {
+      try {
+        const previousDailies = await dailyEntriesForMemberInRange(member, previous.startOf('day'), previous.endOf('day'));
+        const previousAbsences = await absenceEntriesForMemberInRange(member, previous.startOf('day'), previous.endOf('day'));
+        if (previousDailies.length === 0 && previousAbsences.length === 0) {
+          lines.push(
+            `⚠️ **${member.name}** · damit seit **2 Arbeitstagen in Folge** ohne Daily oder Abmeldung. Diese Inaktivität wird dokumentiert.`
+          );
+        }
+      } catch {
+        lines.push(`⚠️ **${member.name}** · vorheriger Status konnte wegen eines Forumfehlers nicht geprüft werden.`);
       }
-    } catch {
-      lines.push(`⚠️ **${member.name}** · vorheriger Status konnte wegen eines Forumfehlers nicht geprüft werden.`);
     }
   }
 
@@ -735,9 +742,10 @@ function closedWorkdaysThisWeek(date = nowBerlin()): DateTime[] {
   const yesterday = date.startOf('day').minus({ days: 1 });
   const friday = start.plus({ days: 4 }).endOf('day');
   const end = yesterday < friday ? yesterday : friday;
+  const firstTrackedDay = start.startOf('day') < TRACKING_START ? TRACKING_START : start.startOf('day');
   const days: DateTime[] = [];
 
-  for (let cursor = start.startOf('day'); cursor <= end; cursor = cursor.plus({ days: 1 })) {
+  for (let cursor = firstTrackedDay; cursor <= end; cursor = cursor.plus({ days: 1 })) {
     if (isWorkday(cursor)) days.push(cursor);
   }
 
@@ -751,11 +759,19 @@ function buildWeeklyReport(
   date = nowBerlin()
 ): string {
   const { start } = currentWeekRange(date);
-  const friday = start.plus({ days: 4 });
+  const weekFriday = start.plus({ days: 4 });
+  const reportStart = start.startOf('day') < TRACKING_START ? TRACKING_START : start.startOf('day');
+  const reportEnd = reportStart > weekFriday
+    ? reportStart.plus({ days: 4 })
+    : date.weekday > 5
+      ? date.startOf('day')
+      : weekFriday;
   const closedDays = closedWorkdaysThisWeek(date);
-  const effectiveAbsences = absences.filter(
+  const trackedEntries = entries.filter((entry) => entry.createdAt.startOf('day') >= TRACKING_START);
+  const trackedAbsences = absences.filter((absence) => absence.createdAt.startOf('day') >= TRACKING_START);
+  const effectiveAbsences = trackedAbsences.filter(
     (absence) =>
-      !entries.some(
+      !trackedEntries.some(
         (entry) => entry.ownerId === absence.ownerId && sameCalendarDay(entry.createdAt, absence.createdAt)
       )
   );
@@ -805,7 +821,7 @@ function buildWeeklyReport(
   };
 
   const summaries = config.members.map((member) => {
-    const memberEntries = entries.filter((entry) => entry.ownerId === member.discordId);
+    const memberEntries = trackedEntries.filter((entry) => entry.ownerId === member.discordId);
     const memberAbsences = effectiveAbsences.filter((entry) => entry.ownerId === member.discordId);
     const done = uniqueReportItems(
       memberEntries.flatMap((entry) => section(entry.content, ['Seit dem letzten Daily', 'Gestern']))
@@ -838,18 +854,29 @@ function buildWeeklyReport(
   const teamDone = uniqueReportItems(summaries.flatMap((summary) => summary.done));
   const totalBlockers = summaries.reduce((sum, summary) => sum + summary.blockers.length, 0);
   const totalMissing = summaries.reduce((sum, summary) => sum + summary.missingDates.length, 0);
+  const dailySummary = trackedEntries.length === 1
+    ? '1 vollständiges Daily Scrum'
+    : `${trackedEntries.length} vollständige Daily Scrums`;
+  const absenceSummary = effectiveAbsences.length === 1
+    ? '1 Abmeldung'
+    : `${effectiveAbsences.length} Abmeldungen`;
 
   const report: string[] = [
     '# Wochenbericht Hauptprojekt',
     '',
-    `**Berichtszeitraum:** ${formatDate(start)} – ${formatDate(friday)}`,
+    `**Berichtszeitraum:** ${formatDate(reportStart)} – ${formatDate(reportEnd)}`,
     `**Erstellt:** ${formatDate(date)} · ${formatTime(date)} Uhr`,
     '',
     '## Wochenüberblick',
-    sentence(
-      `In dieser Woche wurden insgesamt ${entries.length} vollständige Daily Scrums und ${effectiveAbsences.length} Abmeldung${effectiveAbsences.length === 1 ? '' : 'en'} dokumentiert`
-    )
+    `In diesem Berichtszeitraum wurden insgesamt ${dailySummary} und ${absenceSummary} dokumentiert.`
   ];
+
+  if (date.startOf('day') < TRACKING_START) {
+    report.push(
+      `Die reguläre Erfassung durch den Scrum-Master-Bot beginnt am **${formatDate(TRACKING_START)}**. ` +
+        'Zeiträume davor werden nicht als fehlende Dokumentation gewertet.'
+    );
+  }
 
   if (teamDone.length > 0) {
     report.push(
@@ -857,17 +884,21 @@ function buildWeeklyReport(
     );
   }
 
-  report.push(
-    totalBlockers === 0
-      ? 'Es wurden keine fachlichen oder technischen Blocker dokumentiert.'
-      : sentence(`${totalBlockers} unterschiedliche Problem- bzw. Blocker-Einträge wurden dokumentiert`)
-  );
+  if (totalBlockers === 0) {
+    report.push('Es wurden keine fachlichen oder technischen Blocker dokumentiert.');
+  } else if (totalBlockers === 1) {
+    report.push('Es wurde ein Problem- bzw. Blocker-Eintrag dokumentiert.');
+  } else {
+    report.push(`${totalBlockers} unterschiedliche Problem- bzw. Blocker-Einträge wurden dokumentiert.`);
+  }
 
-  report.push(
-    totalMissing === 0
-      ? 'Für alle bereits abgeschlossenen regulären Arbeitstage liegt eine Dokumentation oder Abmeldung vor.'
-      : sentence(`Für ${totalMissing} bereits abgeschlossene Team-Arbeitstag${totalMissing === 1 ? '' : 'e'} fehlt eine Dokumentation oder Abmeldung`)
-  );
+  if (totalMissing === 0) {
+    report.push('Für alle bereits abgeschlossenen regulären Arbeitstage seit Beginn der Erfassung liegt eine Dokumentation oder Abmeldung vor.');
+  } else if (totalMissing === 1) {
+    report.push('Für einen bereits abgeschlossenen regulären Arbeitstag fehlt eine Dokumentation oder Abmeldung.');
+  } else {
+    report.push(`Für ${totalMissing} bereits abgeschlossene Arbeitstage im Team fehlt eine Dokumentation oder Abmeldung.`);
+  }
 
   report.push('', '## Dokumentationsübersicht');
 
@@ -882,7 +913,7 @@ function buildWeeklyReport(
           String(summary.missingDates.length)
         ]
   );
-  const headers = ['Person', 'Dailies', 'Abgem.', 'Blocker', 'Fehlend'];
+  const headers = ['Person', 'Dailies', 'Abmeld.', 'Blocker', 'Fehlend'];
   const widths = headers.map((header, index) =>
     Math.max(header.length, ...tableRows.map((row) => row[index].length))
   );
@@ -914,7 +945,7 @@ function buildWeeklyReport(
         )
       );
     } else {
-      report.push(`Für ${summary.member.name} wurden in dieser Woche keine abgeschlossenen Arbeitspunkte aus Dailies dokumentiert.`);
+      report.push(`Für ${summary.member.name} wurden in diesem Berichtszeitraum keine abgeschlossenen Arbeitspunkte aus Dailies dokumentiert.`);
     }
 
     report.push(
@@ -969,7 +1000,7 @@ function buildWeeklyReport(
   report.push(
     missingLines.length > 0
       ? missingLines.join('\n')
-      : '- Für alle bereits abgeschlossenen regulären Arbeitstage liegt eine Dokumentation vor.'
+      : '- Für alle bereits abgeschlossenen regulären Arbeitstage seit Beginn der Erfassung liegt eine Dokumentation vor.'
   );
 
   report.push('', '## Stand zum Ende der Woche');
@@ -980,7 +1011,7 @@ function buildWeeklyReport(
 
   report.push(
     '',
-    '_Der Bericht wurde automatisch und ausschließlich aus den Daily-Scrum-Einträgen und Abmeldungen erstellt. Exakte Wiederholungen werden zusammengeführt; inhaltlich neue Aussagen werden nicht ergänzt. Bitte vor der Weitergabe kurz prüfen._'
+    '_Der Bericht wurde automatisch und ausschließlich aus den Daily-Scrum-Einträgen und Abmeldungen seit Beginn der Erfassung erstellt. Exakte Wiederholungen werden zusammengeführt; inhaltlich neue Aussagen werden nicht ergänzt. Bitte vor der Weitergabe kurz prüfen._'
   );
 
   return report.join('\n');
@@ -1200,7 +1231,7 @@ function botInfoText(): string {
     `Wer an einem regulären Projekttag kein Daily machen kann, wählt im Daily-Dialog **Nein, abmelden**. Gründe: **Krankheit**, **Termin** oder **Anderes**. Abgemeldete Personen werden an diesem Tag nicht mehr wegen eines fehlenden Dailys gepingt.\n` +
     `Bei **Krankheit** gilt zusätzlich: bitte vor Unterrichtsbeginn um **08:00 Uhr** im bib-Intranet krankmelden: ${SICKNESS_INTRANET_URL}\n\n` +
     `## Push & Wochenbericht\n` +
-    `Bei \`Noch zu pushen: Ja\` folgt nach ca. **${config.pushReminderAfterHours} Stunden** einmalig eine Erinnerung. Freitag **14:00** entsteht der Wochenbericht aus Dailies, Abmeldungen und fehlender Dokumentation.\n\n` +
+    `Bei \`Noch zu pushen: Ja\` folgt nach ca. **${config.pushReminderAfterHours} Stunden** einmalig eine Erinnerung. Freitag **14:00** entsteht der Wochenbericht aus Dailies, Abmeldungen und fehlender Dokumentation. Regulär ausgewertet wird ab **${formatDate(TRACKING_START)}**.\n\n` +
     `## Meetings & Befehle\n` +
     `Meetings: \`/bot meeting\` in <#${config.meetingCreateChannelId}> · Voice: <#${config.meetingVoiceChannelId}>\n` +
     `\`/daily\` · Daily/Abmeldung  •  \`/scrum status\` · Tagesstatus  •  \`/bot struktur\` · Vorlage  •  \`/bot status\` · Bot prüfen  •  \`/bot info\` · diese Übersicht aktualisieren`
@@ -1288,7 +1319,9 @@ async function replyBotStatus(interaction: ChatInputCommandInteraction): Promise
     }
   }
 
-  await interaction.editReply(`🟢 **Scrum Master ist online**\n${lines.join('\n')}\nZeitzone: ${config.timezone}`);
+  await interaction.editReply(
+    `🟢 **Scrum Master ist online**\n${lines.join('\n')}\nZeitzone: ${config.timezone}\nErfassung ab: ${formatDate(TRACKING_START)}`
+  );
 }
 
 function isBotSubcommand(interaction: ChatInputCommandInteraction, subcommand: string): boolean {
