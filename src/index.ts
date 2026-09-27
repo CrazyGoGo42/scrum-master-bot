@@ -752,6 +752,7 @@ function buildWeeklyReport(
 ): string {
   const { start } = currentWeekRange(date);
   const friday = start.plus({ days: 4 });
+  const closedDays = closedWorkdaysThisWeek(date);
   const effectiveAbsences = absences.filter(
     (absence) =>
       !entries.some(
@@ -759,86 +760,229 @@ function buildWeeklyReport(
       )
   );
 
+  const normalizeReportItem = (value: string): string =>
+    value
+      .trim()
+      .replace(/^[-*]\s*/, '')
+      .replace(/\s+/g, ' ')
+      .replace(/[.!?]+$/, '')
+      .toLocaleLowerCase('de-DE');
+
+  const uniqueReportItems = (items: string[]): string[] => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+
+    for (const raw of items) {
+      const clean = raw.trim().replace(/^[-*]\s*/, '');
+      if (!clean) continue;
+      const key = normalizeReportItem(clean);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      result.push(clean);
+    }
+
+    return result;
+  };
+
+  const listAsText = (items: string[]): string => {
+    const clean = uniqueReportItems(items).map((item) => item.replace(/[.!?]+$/, ''));
+    if (clean.length === 0) return '';
+    if (clean.length === 1) return clean[0];
+    if (clean.length === 2) return `${clean[0]} und ${clean[1]}`;
+    return `${clean.slice(0, -1).join(', ')} sowie ${clean.at(-1)}`;
+  };
+
+  const sentence = (value: string): string => {
+    const trimmed = value.trim();
+    if (!trimmed) return trimmed;
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  };
+
+  const reportAbsenceLabel = (entry: AbsenceEntry): string => {
+    if (entry.kind === 'Krankheit') return 'Krankheit (entschuldigt)';
+    if (entry.kind === 'Termin') return entry.detail ? `Termin: ${entry.detail}` : 'Termin';
+    return entry.detail ? entry.detail : 'anderer Grund';
+  };
+
+  const summaries = config.members.map((member) => {
+    const memberEntries = entries.filter((entry) => entry.ownerId === member.discordId);
+    const memberAbsences = effectiveAbsences.filter((entry) => entry.ownerId === member.discordId);
+    const done = uniqueReportItems(
+      memberEntries.flatMap((entry) => section(entry.content, ['Seit dem letzten Daily', 'Gestern']))
+    );
+    const blockers = uniqueReportItems(
+      memberEntries
+        .filter((entry) => containsBlocker(entry.content))
+        .flatMap((entry) => section(entry.content, ['Blocker']))
+    );
+    const latest = [...memberEntries].sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())[0];
+    const next = latest ? uniqueReportItems(section(latest.content, ['Heute'])) : [];
+    const documentedDates = new Set([
+      ...memberEntries.map((entry) => entry.createdAt.toISODate()),
+      ...memberAbsences.map((entry) => entry.createdAt.toISODate())
+    ]);
+    const missingDates = closedDays.filter((day) => !documentedDates.has(day.toISODate()));
+
+    return {
+      member,
+      memberEntries,
+      memberAbsences,
+      done,
+      blockers,
+      next,
+      missingDates,
+      unavailable: unavailableMemberIds.has(member.discordId)
+    };
+  });
+
+  const teamDone = uniqueReportItems(summaries.flatMap((summary) => summary.done));
+  const totalBlockers = summaries.reduce((sum, summary) => sum + summary.blockers.length, 0);
+  const totalMissing = summaries.reduce((sum, summary) => sum + summary.missingDates.length, 0);
+
   const report: string[] = [
-    '# Wochenbericht',
+    '# Wochenbericht Hauptprojekt',
     '',
-    `**Zeitraum:** ${formatDate(start)} – ${formatDate(friday)}`,
+    `**Berichtszeitraum:** ${formatDate(start)} – ${formatDate(friday)}`,
+    `**Erstellt:** ${formatDate(date)} · ${formatTime(date)} Uhr`,
     '',
-    '## Zusammenfassung',
-    'Der Bericht wurde automatisch aus den vollständig abgegebenen Daily Scrums und dokumentierten Abmeldungen erstellt. Freitags nach 14:00 Uhr eingereichte Dailies können bei Bedarf über `/wochenbericht erstellen` in einem neuen Bericht berücksichtigt werden.',
-    ''
+    '## Wochenüberblick',
+    sentence(
+      `In dieser Woche wurden insgesamt ${entries.length} vollständige Daily Scrums und ${effectiveAbsences.length} Abmeldung${effectiveAbsences.length === 1 ? '' : 'en'} dokumentiert`
+    )
   ];
 
-  for (const member of config.members) {
-    report.push(`## ${member.name}`);
+  if (teamDone.length > 0) {
+    report.push(
+      sentence(`Als zentrale dokumentierte Arbeitspunkte wurden unter anderem ${listAsText(teamDone.slice(0, 5))} festgehalten`)
+    );
+  }
 
-    if (unavailableMemberIds.has(member.discordId)) {
-      report.push('- Das zugeordnete Daily-Forum konnte beim Erstellen des Berichts nicht gelesen werden.', '');
+  report.push(
+    totalBlockers === 0
+      ? 'Es wurden keine fachlichen oder technischen Blocker dokumentiert.'
+      : sentence(`${totalBlockers} unterschiedliche Problem- bzw. Blocker-Einträge wurden dokumentiert`)
+  );
+
+  report.push(
+    totalMissing === 0
+      ? 'Für alle bereits abgeschlossenen regulären Arbeitstage liegt eine Dokumentation oder Abmeldung vor.'
+      : sentence(`Für ${totalMissing} bereits abgeschlossene Team-Arbeitstag${totalMissing === 1 ? '' : 'e'} fehlt eine Dokumentation oder Abmeldung`)
+  );
+
+  report.push('', '## Dokumentationsübersicht');
+
+  const tableRows = summaries.map((summary) =>
+    summary.unavailable
+      ? [summary.member.name, 'n. v.', 'n. v.', 'n. v.', 'n. v.']
+      : [
+          summary.member.name,
+          String(summary.memberEntries.length),
+          String(summary.memberAbsences.length),
+          String(summary.blockers.length),
+          String(summary.missingDates.length)
+        ]
+  );
+  const headers = ['Person', 'Dailies', 'Abgem.', 'Blocker', 'Fehlend'];
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...tableRows.map((row) => row[index].length))
+  );
+  const tableLine = (cells: string[]): string =>
+    cells.map((cell, index) => cell.padEnd(widths[index])).join('  ');
+
+  report.push(
+    '```text',
+    tableLine(headers),
+    tableLine(widths.map((width) => '-'.repeat(width))),
+    ...tableRows.map((row) => tableLine(row)),
+    '```'
+  );
+
+  report.push('', '## Arbeit der Teammitglieder');
+
+  for (const summary of summaries) {
+    report.push(`### ${summary.member.name}`);
+
+    if (summary.unavailable) {
+      report.push('Das zugeordnete Daily-Forum konnte beim Erstellen des Berichts nicht gelesen werden.', '');
       continue;
     }
 
-    const memberEntries = entries.filter((entry) => entry.ownerId === member.discordId);
-    if (memberEntries.length === 0) {
-      report.push('- Für diese Woche wurden keine vollständigen Daily-Scrum-Einträge gefunden.', '');
-      continue;
+    if (summary.done.length > 0) {
+      report.push(
+        sentence(
+          `${summary.member.name} dokumentierte in dieser Woche folgende Arbeiten bzw. Ergebnisse: ${listAsText(summary.done)}`
+        )
+      );
+    } else {
+      report.push(`Für ${summary.member.name} wurden in dieser Woche keine abgeschlossenen Arbeitspunkte aus Dailies dokumentiert.`);
     }
 
-    for (const entry of memberEntries) {
-      const done = section(entry.content, ['Seit dem letzten Daily', 'Gestern']);
-      const today = section(entry.content, ['Heute']);
-      report.push(`**${entry.createdAt.toFormat('cccc, dd.MM.')} · Daily ${formatTime(entry.createdAt)} Uhr**`);
-      done.forEach((item) => report.push(`- Erledigt: ${item}`));
-      today.forEach((item) => report.push(`- Geplant: ${item}`));
+    report.push(
+      summary.blockers.length > 0
+        ? sentence(`Dokumentierte Probleme bzw. Blocker: ${listAsText(summary.blockers)}`)
+        : 'Es wurden keine Probleme oder Blocker dokumentiert.'
+    );
+
+    report.push(
+      summary.next.length > 0
+        ? sentence(`Aktueller Stand bzw. nächste Schritte laut letztem Daily: ${listAsText(summary.next)}`)
+        : 'Aus den vorhandenen Dailies lässt sich derzeit kein nächster Schritt ableiten.'
+    );
+
+    if (summary.memberAbsences.length > 0) {
+      const absenceText = summary.memberAbsences
+        .map((entry) => `${formatDate(entry.createdAt)}: ${reportAbsenceLabel(entry)}`)
+        .join('; ');
+      report.push(sentence(`Dokumentierte Abwesenheit: ${absenceText}`));
+    }
+
+    if (summary.missingDates.length > 0) {
+      report.push(
+        sentence(`Ohne Daily oder Abmeldung: ${summary.missingDates.map((day) => formatDate(day)).join(', ')}`)
+      );
     }
 
     report.push('');
   }
 
-  const blockers = entries
-    .filter((entry) => containsBlocker(entry.content))
-    .flatMap((entry) => section(entry.content, ['Blocker']).map((item) => `- **${entry.ownerName}:** ${item}`));
-
-  report.push('## Blocker');
-  report.push(blockers.length ? blockers.join('\n') : '- Keine dokumentierten Blocker.');
+  report.push('## Probleme und Blocker');
+  const blockerLines = summaries.flatMap((summary) =>
+    summary.blockers.map((blocker) => `- **${summary.member.name}:** ${blocker}`)
+  );
+  report.push(blockerLines.length > 0 ? blockerLines.join('\n') : '- Keine dokumentierten Blocker.');
 
   report.push('', '## Abwesenheiten');
   if (effectiveAbsences.length === 0) {
     report.push('- Keine Abmeldungen dokumentiert.');
   } else {
     effectiveAbsences.forEach((entry) =>
-      report.push(`- **${entry.ownerName} · ${formatDate(entry.createdAt)}:** ${absenceLabel(entry)}`)
+      report.push(`- **${entry.ownerName} · ${formatDate(entry.createdAt)}:** ${reportAbsenceLabel(entry)}`)
     );
   }
 
-  report.push('', '## Fehlende Dailies / Abmeldungen');
-  const closedDays = closedWorkdaysThisWeek(date);
-  const missingLines: string[] = [];
+  report.push('', '## Fehlende Dokumentation');
+  const missingLines = summaries.flatMap((summary) =>
+    summary.missingDates.length > 0
+      ? [`- **${summary.member.name}:** ${summary.missingDates.map((day) => formatDate(day)).join(', ')}`]
+      : []
+  );
+  report.push(
+    missingLines.length > 0
+      ? missingLines.join('\n')
+      : '- Für alle bereits abgeschlossenen regulären Arbeitstage liegt eine Dokumentation vor.'
+  );
 
-  for (const member of config.members) {
-    if (unavailableMemberIds.has(member.discordId)) continue;
-    const documentedDates = new Set([
-      ...entries.filter((entry) => entry.ownerId === member.discordId).map((entry) => entry.createdAt.toISODate()),
-      ...effectiveAbsences
-        .filter((entry) => entry.ownerId === member.discordId)
-        .map((entry) => entry.createdAt.toISODate())
-    ]);
-    const missingDates = closedDays.filter((day) => !documentedDates.has(day.toISODate())).map((day) => formatDate(day));
-    if (missingDates.length > 0) missingLines.push(`- **${member.name}:** ${missingDates.join(', ')}`);
-  }
+  report.push('', '## Stand zum Ende der Woche');
+  const nextLines = summaries.flatMap((summary) =>
+    summary.next.length > 0 ? [`- **${summary.member.name}:** ${listAsText(summary.next)}`] : []
+  );
+  report.push(nextLines.length > 0 ? nextLines.join('\n') : '- Noch keine nächsten Schritte dokumentiert.');
 
-  report.push(missingLines.length ? missingLines.join('\n') : '- Keine fehlenden abgeschlossenen Arbeitstage dokumentiert.');
-  report.push('', '## Aktueller Stand / nächste Schritte');
+  report.push(
+    '',
+    '_Der Bericht wurde automatisch und ausschließlich aus den Daily-Scrum-Einträgen und Abmeldungen erstellt. Exakte Wiederholungen werden zusammengeführt; inhaltlich neue Aussagen werden nicht ergänzt. Bitte vor der Weitergabe kurz prüfen._'
+  );
 
-  for (const member of config.members) {
-    const latest = entries
-      .filter((entry) => entry.ownerId === member.discordId)
-      .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())[0];
-
-    if (!latest) continue;
-    section(latest.content, ['Heute']).forEach((item) => report.push(`- **${member.name}:** ${item}`));
-  }
-
-  report.push('', '_Automatisch aus den Daily-Scrum-Einträgen und Abmeldungen erstellt. Bitte vor Weitergabe prüfen._');
   return report.join('\n');
 }
 
