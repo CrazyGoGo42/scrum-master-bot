@@ -2,6 +2,10 @@
 
 Discord Scrum-Master-Bot für das Hauptprojekt. Der Bot überwacht Daily-Scrum-Posts in einem Discord-Forum, erinnert werktags an fehlende Dailies, erinnert am Tagesende ans Committen/Pushen und erstellt aus den Daily-Posts einen strukturierten Wochenbericht.
 
+## Bot hinzufügen
+
+[➕ Scrum Master zu einem Discord-Server hinzufügen](https://discord.com/oauth2/authorize?client_id=1553772454835392642&permissions=326417599552&integration_type=0&scope=bot+applications.commands)
+
 > Der Bot hat **keinen Zugriff auf das private Hauptprojekt-GitHub-Repository** und versucht daher ausdrücklich nicht, Commits oder Branches zu verifizieren. Git-Hinweise sind reine Workflow-Erinnerungen.
 
 ## Funktionen
