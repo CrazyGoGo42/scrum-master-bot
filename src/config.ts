@@ -6,18 +6,29 @@ function required(name: string): string {
   return value;
 }
 
+function numberValue(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export const config = {
   token: required('DISCORD_TOKEN'),
   guildId: required('DISCORD_GUILD_ID'),
   weeklyForumId: required('WEEKLY_REPORT_FORUM_ID'),
   scrumChannelId: required('SCRUM_MASTER_CHANNEL_ID'),
+  infoChannelId: required('SCRUM_INFO_CHANNEL_ID'),
+  meetingCreateChannelId: required('MEETING_CREATE_CHANNEL_ID'),
+  meetingVoiceChannelId: required('MEETING_VOICE_CHANNEL_ID'),
   timezone: process.env.TIMEZONE || 'Europe/Berlin',
+  pushReminderAfterHours: numberValue('PUSH_REMINDER_AFTER_HOURS', 6),
   cron: {
     dailyOpen: process.env.DAILY_OPEN_CRON || '0 9 * * 1-5',
-    dailyReminder: process.env.DAILY_REMINDER_CRON || '0 11 * * 1-5',
-    dailyFinalReminder: process.env.DAILY_FINAL_REMINDER_CRON || '45 11 * * 1-5',
-    dailyDeadline: process.env.DAILY_DEADLINE_CRON || '0 12 * * 1-5',
-    gitReminder: process.env.GIT_REMINDER_CRON || '30 16 * * 1-5',
+    dailyReminder: process.env.DAILY_REMINDER_CRON || '0 15 * * 1-5',
+    dailyEveningReminder: process.env.DAILY_EVENING_REMINDER_CRON || '0 20 * * 1-5',
+    dailyMissingReport: process.env.DAILY_MISSING_REPORT_CRON || '5 0 * * 2-6',
+    pushReminderCheck: process.env.PUSH_REMINDER_CHECK_CRON || '0 * * * *',
     weeklyReport: process.env.WEEKLY_REPORT_CRON || '0 14 * * 5'
   },
   members: [
