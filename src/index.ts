@@ -26,12 +26,23 @@ import { config } from './config.js';
 import { currentWeekRange, formatDate, formatTime, isWorkday, nowBerlin } from './utils/dates.js';
 
 type TeamMember = (typeof config.members)[number];
+type AbsenceKind = 'Krankheit' | 'Termin' | 'Anderes';
 
 type DailyEntry = {
   thread: ThreadChannel;
   ownerId: string;
   ownerName: string;
   createdAt: DateTime;
+  content: string;
+};
+
+type AbsenceEntry = {
+  thread: ThreadChannel;
+  ownerId: string;
+  ownerName: string;
+  createdAt: DateTime;
+  kind: AbsenceKind;
+  detail?: string;
   content: string;
 };
 
@@ -46,6 +57,11 @@ type DailyDraft = {
 
 type DailyScanResult = {
   entries: DailyEntry[];
+  unavailableMemberIds: Set<string>;
+};
+
+type AbsenceScanResult = {
+  entries: AbsenceEntry[];
   unavailableMemberIds: Set<string>;
 };
 
@@ -68,6 +84,8 @@ const NO_PERMISSION = '⛔ Du gehörst nicht zum konfigurierten Projektteam und 
 const INFO_MARKER = '# Scrum Master Bot · Projektübersicht';
 const PUSH_REMINDER_MARKER = '🔔 **Push-Erinnerung**';
 const PUSH_DONE_MARKER = '**Push-Status:** ✅ Erledigt';
+const ABSENCE_CANCELLED_MARKER = '**Abmeldung aufgehoben:**';
+const SICKNESS_INTRANET_URL = 'https://intranet.bib.de/tiki-index.php?page=welcome';
 
 const client = new Client({
   intents: [
@@ -103,6 +121,10 @@ function dailyPostTitle(member: TeamMember, date = nowBerlin()): string {
   return `Daily Scrum ${member.name} ${formatDate(date)}`;
 }
 
+function absencePostTitle(member: TeamMember, date = nowBerlin()): string {
+  return `Abmeldung ${member.name} ${formatDate(date)}`;
+}
+
 function mentionList(ids: string[]): string {
   return ids.map((id) => `<@${id}>`).join(' ');
 }
@@ -133,6 +155,51 @@ function dailyStartRow(): ActionRowBuilder<ButtonBuilder> {
       .setLabel('Daily ausfüllen')
       .setEmoji('📝')
       .setStyle(ButtonStyle.Primary)
+  );
+}
+
+function dailyAvailabilityRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('daily:work-yes')
+      .setLabel('Ja, Daily starten')
+      .setEmoji('✅')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('daily:work-no')
+      .setLabel('Nein, abmelden')
+      .setEmoji('🚫')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function weekendDailyRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('daily:work-yes')
+      .setLabel('Freiwilliges Daily starten')
+      .setEmoji('📝')
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
+function absenceReasonRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('absence:sick')
+      .setLabel('Krankheit')
+      .setEmoji('🤒')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId('absence:appointment')
+      .setLabel('Termin')
+      .setEmoji('📅')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('absence:other')
+      .setLabel('Anderes')
+      .setEmoji('📝')
+      .setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -266,7 +333,7 @@ function questionTwoModal(draft?: DailyDraft): ModalBuilder {
   return new ModalBuilder()
     .setCustomId('daily:q2')
     .setTitle('Daily Scrum • Frage 2/4')
-    .addComponents(textarea('answer', 'Was möchtest du heute machen?', 'Plane deinen Tag so, wie er für dich passt.', draft?.today));
+    .addComponents(textarea('answer', 'Was möchtest du heute machen?', 'Plane deinen Arbeitstag.', draft?.today));
 }
 
 function blockerModal(draft?: DailyDraft): ModalBuilder {
@@ -288,6 +355,23 @@ function questionFourModal(draft?: DailyDraft): ModalBuilder {
     .setCustomId('daily:q4')
     .setTitle('Daily Scrum • Frage 4/4')
     .addComponents(shortInput('branch', 'An welchem Branch arbeitest du?', 'z. B. feature/login', draft?.branch));
+}
+
+function absenceDetailModal(kind: 'appointment' | 'other'): ModalBuilder {
+  const appointment = kind === 'appointment';
+  return new ModalBuilder()
+    .setCustomId(`absence:details:${kind}`)
+    .setTitle(appointment ? 'Abmeldung • Termin' : 'Abmeldung • Anderes')
+    .addComponents(
+      textarea(
+        'reason',
+        appointment ? 'Welcher Termin verhindert dein Daily?' : 'Warum kannst du heute kein Daily machen?',
+        appointment ? 'z. B. Arzttermin, Behördentermin ...' : 'Kurzer Grund für die Abmeldung',
+        undefined,
+        true,
+        500
+      )
+    );
 }
 
 function meetingModal(): ModalBuilder {
@@ -385,12 +469,39 @@ function matchesMemberDailyTitle(thread: ThreadChannel, member: TeamMember): boo
   return thread.name.toLocaleLowerCase('de-DE').startsWith(`daily scrum ${member.name} `.toLocaleLowerCase('de-DE'));
 }
 
+function matchesMemberAbsenceTitle(thread: ThreadChannel, member: TeamMember): boolean {
+  return thread.name.toLocaleLowerCase('de-DE').startsWith(`abmeldung ${member.name} `.toLocaleLowerCase('de-DE'));
+}
+
 function hasPushPending(content: string): boolean {
   return /noch\s+zu\s+pushen\s*:\s*(ja|yes|true)/i.test(content);
 }
 
 function hasPushDone(content: string): boolean {
   return content.includes(PUSH_DONE_MARKER);
+}
+
+function absenceKind(content: string): AbsenceKind | undefined {
+  const match = content.match(/(?:^|\n)-?\s*Grund:\s*(Krankheit|Termin|Anderes)\b/i);
+  if (!match) return undefined;
+  const normalized = match[1].toLowerCase();
+  if (normalized === 'krankheit') return 'Krankheit';
+  if (normalized === 'termin') return 'Termin';
+  return 'Anderes';
+}
+
+function absenceDetail(content: string): string | undefined {
+  return content.match(/(?:^|\n)-?\s*Details:\s*(.+)/i)?.[1]?.trim();
+}
+
+function absenceLabel(entry: AbsenceEntry): string {
+  if (entry.kind === 'Krankheit') return 'Krankheit (entschuldigt)';
+  if (entry.detail) return `${entry.kind}: ${entry.detail}`;
+  return entry.kind;
+}
+
+function sameCalendarDay(a: DateTime, b: DateTime): boolean {
+  return a.toISODate() === b.toISODate();
 }
 
 async function dailyEntriesForMemberInRange(
@@ -423,6 +534,40 @@ async function dailyEntriesForMemberInRange(
   return entries.sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
 }
 
+async function absenceEntriesForMemberInRange(
+  member: TeamMember,
+  start: DateTime,
+  end: DateTime
+): Promise<AbsenceEntry[]> {
+  const forum = await getForum(member.dailyForumId);
+  const threads = await allForumThreads(forum);
+  const entries: AbsenceEntry[] = [];
+
+  for (const thread of threads) {
+    if (!thread.createdAt || !matchesMemberAbsenceTitle(thread, member)) continue;
+
+    const createdAt = toBerlin(thread.createdAt);
+    if (createdAt < start || createdAt > end) continue;
+
+    const content = await starterContent(thread);
+    if (content.includes(ABSENCE_CANCELLED_MARKER)) continue;
+    const kind = absenceKind(content);
+    if (!kind) continue;
+
+    entries.push({
+      thread,
+      ownerId: member.discordId,
+      ownerName: member.name,
+      createdAt,
+      kind,
+      detail: absenceDetail(content),
+      content
+    });
+  }
+
+  return entries.sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
+}
+
 async function scanDailyEntriesInRange(start: DateTime, end: DateTime): Promise<DailyScanResult> {
   const entries: DailyEntry[] = [];
   const unavailableMemberIds = new Set<string>();
@@ -440,14 +585,43 @@ async function scanDailyEntriesInRange(start: DateTime, end: DateTime): Promise<
   return { entries, unavailableMemberIds };
 }
 
+async function scanAbsencesInRange(start: DateTime, end: DateTime): Promise<AbsenceScanResult> {
+  const entries: AbsenceEntry[] = [];
+  const unavailableMemberIds = new Set<string>();
+
+  for (const member of config.members) {
+    try {
+      entries.push(...(await absenceEntriesForMemberInRange(member, start, end)));
+    } catch (error) {
+      unavailableMemberIds.add(member.discordId);
+      console.error(`[Abmeldung] Forum für ${member.name} (${member.dailyForumId}) konnte nicht gelesen werden.`, error);
+    }
+  }
+
+  entries.sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
+  return { entries, unavailableMemberIds };
+}
+
 async function dailyEntriesForDate(date = nowBerlin()): Promise<DailyEntry[]> {
   return (await scanDailyEntriesInRange(date.startOf('day'), date.endOf('day'))).entries;
 }
 
-function missingMembers(entries: DailyEntry[], unavailableMemberIds = new Set<string>()) {
+function mergeUnavailable(...sets: Set<string>[]): Set<string> {
+  return new Set(sets.flatMap((set) => [...set]));
+}
+
+function missingMembers(
+  entries: DailyEntry[],
+  unavailableMemberIds = new Set<string>(),
+  absences: AbsenceEntry[] = []
+) {
   const submitted = new Set(entries.map((entry) => entry.ownerId));
+  const absent = new Set(absences.map((entry) => entry.ownerId));
   return config.members.filter(
-    (member) => !submitted.has(member.discordId) && !unavailableMemberIds.has(member.discordId)
+    (member) =>
+      !submitted.has(member.discordId) &&
+      !absent.has(member.discordId) &&
+      !unavailableMemberIds.has(member.discordId)
   );
 }
 
@@ -458,8 +632,8 @@ async function sendDailyOpen(): Promise<void> {
   await channel.send({
     content:
       `☕ **Daily Scrum ist offen · ${formatDate()}**\n` +
-      `Plant euren Tag so, wie er zu eurem Alltag passt. Es gibt **keine 12-Uhr-Deadline**. ` +
-      `Macht euer Daily einfach irgendwann heute, morgens, nachmittags oder abends.`,
+      `Es gibt keine feste Startzeit. Entscheidend ist nur: **Daily zuerst, danach Projektarbeit.** ` +
+      `Wenn ihr heute nicht arbeiten könnt, könnt ihr euch direkt über den Daily-Dialog abmelden.`,
     components: [dailyStartRow()]
   });
 }
@@ -467,15 +641,19 @@ async function sendDailyOpen(): Promise<void> {
 async function sendDailyReminder(evening = false): Promise<void> {
   if (!isWorkday()) return;
 
-  const scan = await scanDailyEntriesInRange(nowBerlin().startOf('day'), nowBerlin().endOf('day'));
-  const missing = missingMembers(scan.entries, scan.unavailableMemberIds);
+  const start = nowBerlin().startOf('day');
+  const end = nowBerlin().endOf('day');
+  const dailyScan = await scanDailyEntriesInRange(start, end);
+  const absenceScan = await scanAbsencesInRange(start, end);
+  const unavailable = mergeUnavailable(dailyScan.unavailableMemberIds, absenceScan.unavailableMemberIds);
+  const missing = missingMembers(dailyScan.entries, unavailable, absenceScan.entries);
   if (missing.length === 0) return;
 
   const channel = await getScrumChannel();
   const mentions = mentionList(missing.map((member) => member.discordId));
   const text = evening
-    ? 'falls ihr heute noch am Projekt arbeitet: euer Daily fehlt noch. Kein Stress, es zählt bis zum Ende des Tages.'
-    : 'kleine Erinnerung: euer Daily fehlt heute noch. Macht es einfach, sobald es in euren Tagesablauf passt.';
+    ? 'falls ihr heute noch am Projekt arbeiten möchtet: macht euer Daily bitte **vor Arbeitsbeginn**. Wenn ihr heute nicht könnt, könnt ihr euch abmelden.'
+    : 'kleine Erinnerung: falls ihr heute am Projekt arbeitet, macht euer Daily bitte **unmittelbar vor Arbeitsbeginn**. Es gibt keine feste Uhrzeit.';
 
   await channel.send({
     content: `📋 **Daily-Erinnerung**\n${mentions} ${text}`,
@@ -488,8 +666,10 @@ async function reportMissingDailies(): Promise<void> {
   const target = nowBerlin().minus({ days: 1 }).startOf('day');
   if (!isWorkday(target)) return;
 
-  const scan = await scanDailyEntriesInRange(target.startOf('day'), target.endOf('day'));
-  const missing = missingMembers(scan.entries, scan.unavailableMemberIds);
+  const dailyScan = await scanDailyEntriesInRange(target.startOf('day'), target.endOf('day'));
+  const absenceScan = await scanAbsencesInRange(target.startOf('day'), target.endOf('day'));
+  const unavailable = mergeUnavailable(dailyScan.unavailableMemberIds, absenceScan.unavailableMemberIds);
+  const missing = missingMembers(dailyScan.entries, unavailable, absenceScan.entries);
   if (missing.length === 0) return;
 
   const channel = await getScrumChannel();
@@ -497,19 +677,22 @@ async function reportMissingDailies(): Promise<void> {
   const previous = previousWorkday(target);
 
   for (const member of missing) {
-    lines.push(`❌ **${member.name}** · für diesen Tag liegt kein Daily vor.`);
+    lines.push(`❌ **${member.name}** · für diesen Arbeitstag liegt weder ein Daily noch eine Abmeldung vor.`);
 
     try {
-      const previousEntries = await dailyEntriesForMemberInRange(member, previous.startOf('day'), previous.endOf('day'));
-      if (previousEntries.length === 0) {
-        lines.push(`⚠️ **${member.name}** · damit seit **2 Arbeitstagen in Folge** ohne Daily. Diese Inaktivität wird dokumentiert.`);
+      const previousDailies = await dailyEntriesForMemberInRange(member, previous.startOf('day'), previous.endOf('day'));
+      const previousAbsences = await absenceEntriesForMemberInRange(member, previous.startOf('day'), previous.endOf('day'));
+      if (previousDailies.length === 0 && previousAbsences.length === 0) {
+        lines.push(
+          `⚠️ **${member.name}** · damit seit **2 Arbeitstagen in Folge** ohne Daily oder Abmeldung. Diese Inaktivität wird dokumentiert.`
+        );
       }
     } catch {
-      lines.push(`⚠️ **${member.name}** · vorheriger Daily-Status konnte wegen eines Forumfehlers nicht geprüft werden.`);
+      lines.push(`⚠️ **${member.name}** · vorheriger Status konnte wegen eines Forumfehlers nicht geprüft werden.`);
     }
   }
 
-  lines.push('', '_Ein fehlendes Daily ist eine Dokumentation, keine automatische Sanktion._');
+  lines.push('', '_Eine fehlende Dokumentation ist keine automatische Sanktion._');
   await channel.send(lines.join('\n'));
 }
 
@@ -563,18 +746,26 @@ function closedWorkdaysThisWeek(date = nowBerlin()): DateTime[] {
 
 function buildWeeklyReport(
   entries: DailyEntry[],
+  absences: AbsenceEntry[],
   unavailableMemberIds = new Set<string>(),
   date = nowBerlin()
 ): string {
   const { start } = currentWeekRange(date);
   const friday = start.plus({ days: 4 });
+  const effectiveAbsences = absences.filter(
+    (absence) =>
+      !entries.some(
+        (entry) => entry.ownerId === absence.ownerId && sameCalendarDay(entry.createdAt, absence.createdAt)
+      )
+  );
+
   const report: string[] = [
     '# Wochenbericht',
     '',
     `**Zeitraum:** ${formatDate(start)} – ${formatDate(friday)}`,
     '',
     '## Zusammenfassung',
-    'Der Bericht wurde automatisch aus den vollständig abgegebenen Daily Scrums erstellt. Freitags nach 14:00 Uhr eingereichte Dailies können bei Bedarf über `/wochenbericht erstellen` in einem neuen Bericht berücksichtigt werden.',
+    'Der Bericht wurde automatisch aus den vollständig abgegebenen Daily Scrums und dokumentierten Abmeldungen erstellt. Freitags nach 14:00 Uhr eingereichte Dailies können bei Bedarf über `/wochenbericht erstellen` in einem neuen Bericht berücksichtigt werden.',
     ''
   ];
 
@@ -595,7 +786,7 @@ function buildWeeklyReport(
     for (const entry of memberEntries) {
       const done = section(entry.content, ['Seit dem letzten Daily', 'Gestern']);
       const today = section(entry.content, ['Heute']);
-      report.push(`**${entry.createdAt.toFormat('cccc, dd.MM.')}**`);
+      report.push(`**${entry.createdAt.toFormat('cccc, dd.MM.')} · Daily ${formatTime(entry.createdAt)} Uhr**`);
       done.forEach((item) => report.push(`- Erledigt: ${item}`));
       today.forEach((item) => report.push(`- Geplant: ${item}`));
     }
@@ -610,16 +801,28 @@ function buildWeeklyReport(
   report.push('## Blocker');
   report.push(blockers.length ? blockers.join('\n') : '- Keine dokumentierten Blocker.');
 
-  report.push('', '## Fehlende Dailies');
+  report.push('', '## Abwesenheiten');
+  if (effectiveAbsences.length === 0) {
+    report.push('- Keine Abmeldungen dokumentiert.');
+  } else {
+    effectiveAbsences.forEach((entry) =>
+      report.push(`- **${entry.ownerName} · ${formatDate(entry.createdAt)}:** ${absenceLabel(entry)}`)
+    );
+  }
+
+  report.push('', '## Fehlende Dailies / Abmeldungen');
   const closedDays = closedWorkdaysThisWeek(date);
   const missingLines: string[] = [];
 
   for (const member of config.members) {
     if (unavailableMemberIds.has(member.discordId)) continue;
-    const memberDates = new Set(
-      entries.filter((entry) => entry.ownerId === member.discordId).map((entry) => entry.createdAt.toISODate())
-    );
-    const missingDates = closedDays.filter((day) => !memberDates.has(day.toISODate())).map((day) => formatDate(day));
+    const documentedDates = new Set([
+      ...entries.filter((entry) => entry.ownerId === member.discordId).map((entry) => entry.createdAt.toISODate()),
+      ...effectiveAbsences
+        .filter((entry) => entry.ownerId === member.discordId)
+        .map((entry) => entry.createdAt.toISODate())
+    ]);
+    const missingDates = closedDays.filter((day) => !documentedDates.has(day.toISODate())).map((day) => formatDate(day));
     if (missingDates.length > 0) missingLines.push(`- **${member.name}:** ${missingDates.join(', ')}`);
   }
 
@@ -635,7 +838,7 @@ function buildWeeklyReport(
     section(latest.content, ['Heute']).forEach((item) => report.push(`- **${member.name}:** ${item}`));
   }
 
-  report.push('', '_Automatisch aus den Daily-Scrum-Einträgen erstellt. Bitte vor Weitergabe prüfen._');
+  report.push('', '_Automatisch aus den Daily-Scrum-Einträgen und Abmeldungen erstellt. Bitte vor Weitergabe prüfen._');
   return report.join('\n');
 }
 
@@ -676,15 +879,27 @@ function splitDiscordText(text: string, maxLength = 1900): string[] {
   return chunks;
 }
 
-async function weeklyScan(): Promise<DailyScanResult> {
+async function weeklyScans(): Promise<{
+  daily: DailyScanResult;
+  absence: AbsenceScanResult;
+  unavailableMemberIds: Set<string>;
+}> {
   const { start, end } = currentWeekRange();
-  return scanDailyEntriesInRange(start, end);
+  const daily = await scanDailyEntriesInRange(start, end);
+  const absence = await scanAbsencesInRange(start, end);
+  return {
+    daily,
+    absence,
+    unavailableMemberIds: mergeUnavailable(daily.unavailableMemberIds, absence.unavailableMemberIds)
+  };
 }
 
 async function createWeeklyReport(): Promise<ThreadChannel> {
-  const scan = await weeklyScan();
+  const scans = await weeklyScans();
   const forum = await getForum(config.weeklyForumId);
-  const chunks = splitDiscordText(buildWeeklyReport(scan.entries, scan.unavailableMemberIds));
+  const chunks = splitDiscordText(
+    buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds)
+  );
 
   const thread = await forum.threads.create({
     name: `Wochenbericht für Herrn Tepper | ${formatDate()}`,
@@ -723,6 +938,13 @@ async function alreadySubmitted(userId: string, date = nowBerlin()): Promise<Dai
   return entries[0];
 }
 
+async function activeAbsence(userId: string, date = nowBerlin()): Promise<AbsenceEntry | undefined> {
+  const member = teamMember(userId);
+  if (!member) return undefined;
+  const entries = await absenceEntriesForMemberInRange(member, date.startOf('day'), date.endOf('day'));
+  return entries[0];
+}
+
 async function startDailyForInteraction(interaction: ChatInputCommandInteraction | ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
     await interaction.reply({ content: NO_PERMISSION, flags: MessageFlags.Ephemeral });
@@ -732,7 +954,25 @@ async function startDailyForInteraction(interaction: ChatInputCommandInteraction
   const draft = drafts.get(interaction.user.id) ?? { userId: interaction.user.id };
   drafts.set(interaction.user.id, draft);
 
-  await interaction.showModal(questionOneModal(draft));
+  if (!isWorkday()) {
+    await interaction.reply({
+      content:
+        `### 🌙 Heute ist kein regulärer Projekttag\n` +
+        `Am Wochenende ist kein Daily erforderlich. Falls du freiwillig am Projekt arbeitest, gilt trotzdem: **Daily zuerst, danach Projektarbeit.**`,
+      components: [weekendDailyRow()],
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  await interaction.reply({
+    content:
+      `### Kannst du heute dein Daily machen?\n` +
+      `Wenn du heute am Projekt arbeitest, mach das Daily bitte **unmittelbar vor Arbeitsbeginn**. ` +
+      `Wenn du heute nicht arbeiten kannst, kannst du dich hier abmelden.`,
+    components: [dailyAvailabilityRow()],
+    flags: MessageFlags.Ephemeral
+  });
 }
 
 async function createDailyFromDraft(draft: DailyDraft): Promise<ThreadChannel> {
@@ -741,11 +981,12 @@ async function createDailyFromDraft(draft: DailyDraft): Promise<ThreadChannel> {
 
   const forum = await getForum(member.dailyForumId);
   const needsPush = normalizeYesNo(draft.pushPending ?? 'Nein') === 'Ja';
+  const createdAt = nowBerlin();
 
   return forum.threads.create({
-    name: dailyPostTitle(member),
+    name: dailyPostTitle(member, createdAt),
     message: {
-      content: draftContent(draft),
+      content: `**Daily erstellt:** ${formatTime(createdAt)} Uhr\n\n${draftContent(draft)}`,
       components: needsPush ? [pushDoneRow(draft.userId)] : [],
       allowedMentions: { parse: [] }
     },
@@ -753,24 +994,72 @@ async function createDailyFromDraft(draft: DailyDraft): Promise<ThreadChannel> {
   });
 }
 
+function absenceContent(kind: AbsenceKind, detail: string | undefined, date = nowBerlin()): string {
+  const status = kind === 'Krankheit' ? 'Entschuldigt' : 'Abgemeldet';
+  return (
+    `## Abmeldung\n` +
+    `- Status: ${status}\n` +
+    `- Grund: ${kind}\n` +
+    (detail ? `- Details: ${detail}\n` : '') +
+    `- Gemeldet: ${formatTime(date)} Uhr`
+  );
+}
+
+async function createAbsence(userId: string, kind: AbsenceKind, detail?: string): Promise<ThreadChannel> {
+  const member = teamMember(userId);
+  if (!member) throw new Error(`Unbekanntes Teammitglied: ${userId}`);
+
+  const existingDaily = await alreadySubmitted(userId);
+  if (existingDaily) throw new Error('DAILY_ALREADY_EXISTS');
+
+  const existingAbsence = await activeAbsence(userId);
+  if (existingAbsence) return existingAbsence.thread;
+
+  const date = nowBerlin();
+  const forum = await getForum(member.dailyForumId);
+  const thread = await forum.threads.create({
+    name: absencePostTitle(member, date),
+    message: {
+      content: absenceContent(kind, detail, date),
+      allowedMentions: { parse: [] }
+    },
+    reason: `Abmeldung von ${member.name}`
+  });
+
+  const channel = await getScrumChannel();
+  const display = kind === 'Krankheit' ? 'Krankheit (entschuldigt)' : detail ? `${kind}: ${detail}` : kind;
+  await channel.send(`🟦 **Abmeldung · ${formatDate(date)}**\n**${member.name}** · ${display}`);
+  return thread;
+}
+
+async function cancelActiveAbsenceIfPresent(userId: string): Promise<void> {
+  const absence = await activeAbsence(userId);
+  if (!absence) return;
+
+  const starter = await absence.thread.fetchStarterMessage();
+  if (!starter || starter.content.includes(ABSENCE_CANCELLED_MARKER)) return;
+  await starter.edit(
+    `${starter.content}\n\n${ABSENCE_CANCELLED_MARKER} ${formatDate()} ${formatTime(nowBerlin())} Uhr · späteres Daily eingereicht.`
+  );
+}
+
 function botInfoText(): string {
   return (
     `${INFO_MARKER}\n\n` +
-    `Der Bot organisiert unsere Dailies, Erinnerungen, Meetings und Wochenberichte.\n\n` +
+    `Der Bot organisiert Dailies, Abmeldungen, Erinnerungen, Meetings und Wochenberichte.\n\n` +
     `## Daily Scrum\n` +
-    `**09:00** · Daily-Runde wird geöffnet. Es gibt **keine Mittags-Deadline**. Das Daily darf morgens, nachmittags oder abends gemacht werden.\n` +
-    `**15:00** · freundliche Erinnerung an Personen ohne Daily.\n` +
-    `**20:00** · zweite Erinnerung, falls für den Tag noch kein Daily vorliegt.\n` +
-    `**Nach Tagesende** · fehlende Dailies werden dokumentiert. Nach 2 Arbeitstagen in Folge ohne Daily wird die Inaktivität ausdrücklich vermerkt.\n\n` +
-    `Das Daily besteht aus 4 Fragen: erledigte Arbeit, heutiger Plan, Blocker und Branch/Git. Nach dem Absenden landet es automatisch im persönlichen Forum als \`Daily Scrum <Name> TT.MM.JJJJ\`.\n\n` +
-    `## Push-Erinnerung\n` +
-    `Wer im Daily \`Noch zu pushen: Ja\` angibt, bekommt nach ungefähr **${config.pushReminderAfterHours} Stunden** einmalig eine Erinnerung. Im Daily gibt es den Button **Als gepusht markieren**. Das ist nur eine Hilfe, keine Pflicht.\n\n` +
-    `## Wochenbericht\n` +
-    `**Freitag 14:00** · aus den vorhandenen Dailies entsteht automatisch ein Wochenbericht für Herrn Tepper.\n\n` +
-    `## Meetings\n` +
-    `Meetings werden mit \`/bot meeting\` in <#${config.meetingCreateChannelId}> erstellt und finden in <#${config.meetingVoiceChannelId}> statt.\n\n` +
-    `## Wichtige Befehle\n` +
-    `\`/daily\` · Daily starten  •  \`/scrum status\` · heutiger Stand  •  \`/bot struktur\` · Vorlage  •  \`/bot status\` · Bot prüfen  •  \`/bot info\` · diese Übersicht aktualisieren`
+    `**Wann mache ich mein Daily?** Immer unmittelbar **bevor du an diesem Tag mit der Projektarbeit beginnst**. Es gibt keine feste Startzeit. Morgens, nachmittags, abends oder nachts ist alles möglich. Entscheidend ist: **Daily zuerst, danach Projektarbeit.**\n` +
+    `Reguläre Daily-Tage sind **Montag bis Freitag**. Am Wochenende ist kein Daily erforderlich; freiwillige Projektarbeit kann trotzdem mit einem Daily dokumentiert werden.\n` +
+    `**09:00** · Daily-Runde öffnet · **15:00** und **20:00** · freundliche Erinnerungen an noch nicht dokumentierte Personen.\n` +
+    `Ein Daily besteht aus 4 Fragen und wird als \`Daily Scrum <Name> TT.MM.JJJJ\` gespeichert. Im Post steht zusätzlich die Uhrzeit **Daily erstellt: HH:MM Uhr**.\n\n` +
+    `## Abmelden\n` +
+    `Wer an einem regulären Projekttag kein Daily machen kann, wählt im Daily-Dialog **Nein, abmelden**. Gründe: **Krankheit**, **Termin** oder **Anderes**. Abgemeldete Personen werden an diesem Tag nicht mehr wegen eines fehlenden Dailys gepingt.\n` +
+    `Bei **Krankheit** gilt zusätzlich: bitte vor Unterrichtsbeginn um **08:00 Uhr** im bib-Intranet krankmelden: ${SICKNESS_INTRANET_URL}\n\n` +
+    `## Push & Wochenbericht\n` +
+    `Bei \`Noch zu pushen: Ja\` folgt nach ca. **${config.pushReminderAfterHours} Stunden** einmalig eine Erinnerung. Freitag **14:00** entsteht der Wochenbericht aus Dailies, Abmeldungen und fehlender Dokumentation.\n\n` +
+    `## Meetings & Befehle\n` +
+    `Meetings: \`/bot meeting\` in <#${config.meetingCreateChannelId}> · Voice: <#${config.meetingVoiceChannelId}>\n` +
+    `\`/daily\` · Daily/Abmeldung  •  \`/scrum status\` · Tagesstatus  •  \`/bot struktur\` · Vorlage  •  \`/bot status\` · Bot prüfen  •  \`/bot info\` · diese Übersicht aktualisieren`
   );
 }
 
@@ -781,22 +1070,48 @@ async function publishBotInfo(): Promise<void> {
     (message) => message.author.id === client.user?.id && message.content.startsWith(INFO_MARKER)
   );
 
-  const message = existing ? await existing.edit(botInfoText()) : await channel.send(botInfoText());
+  const chunks = splitDiscordText(botInfoText());
+  const message = existing ? await existing.edit(chunks[0]) : await channel.send(chunks[0]);
   if (!message.pinned) await message.pin('Zentrale Scrum-Master-Info').catch(() => undefined);
+
+  for (const chunk of chunks.slice(1)) await channel.send(chunk);
 }
 
 async function replyDailyStatus(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const scan = await scanDailyEntriesInRange(nowBerlin().startOf('day'), nowBerlin().endOf('day'));
-  const latest = new Map(scan.entries.map((entry) => [entry.ownerId, entry]));
+
+  if (!isWorkday()) {
+    const entries = await dailyEntriesForDate();
+    const voluntary = entries.length
+      ? `\n\n**Freiwillige Dailies heute:**\n${entries.map((entry) => `✅ ${entry.ownerName} · ${formatTime(entry.createdAt)} Uhr`).join('\n')}`
+      : '';
+    await interaction.editReply(
+      `### Daily-Status · ${formatDate()}\n🌙 **Heute ist kein regulärer Projekttag.**\n` +
+        `Am Wochenende ist kein Daily Scrum erforderlich. Wer freiwillig am Projekt arbeitet, macht sein Daily bitte vor Arbeitsbeginn.${voluntary}`
+    );
+    return;
+  }
+
+  const start = nowBerlin().startOf('day');
+  const end = nowBerlin().endOf('day');
+  const dailyScan = await scanDailyEntriesInRange(start, end);
+  const absenceScan = await scanAbsencesInRange(start, end);
+  const unavailable = mergeUnavailable(dailyScan.unavailableMemberIds, absenceScan.unavailableMemberIds);
+  const latest = new Map(dailyScan.entries.map((entry) => [entry.ownerId, entry]));
+  const absent = new Map(absenceScan.entries.map((entry) => [entry.ownerId, entry]));
 
   const lines = config.members.map((member) => {
-    if (scan.unavailableMemberIds.has(member.discordId)) return `⚠️ ${member.name} · Forum nicht erreichbar`;
+    if (unavailable.has(member.discordId)) return `⚠️ ${member.name} · Forum nicht erreichbar`;
     const entry = latest.get(member.discordId);
-    return entry ? `✅ ${member.name} · ${formatTime(entry.createdAt)} Uhr` : `⏳ ${member.name} · heute noch kein Daily`;
+    if (entry) return `✅ ${member.name} · Daily ${formatTime(entry.createdAt)} Uhr`;
+    const absence = absent.get(member.discordId);
+    if (absence) return `🟦 ${member.name} · abgemeldet: ${absenceLabel(absence)}`;
+    return `⏳ ${member.name} · heute noch keine Dokumentation`;
   });
 
-  await interaction.editReply(`### Daily-Status · ${formatDate()}\n${lines.join('\n')}\n\n_Das Daily kann bis zum Ende des Tages nachgereicht werden._`);
+  await interaction.editReply(
+    `### Daily-Status · ${formatDate()}\n${lines.join('\n')}\n\n_Daily immer vor Beginn der eigenen Projektarbeit. Es gibt keine feste Startzeit._`
+  );
 }
 
 async function replyBotStatus(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -839,7 +1154,7 @@ function isBotSubcommand(interaction: ChatInputCommandInteraction, subcommand: s
 const commands = [
   new SlashCommandBuilder()
     .setName('daily')
-    .setDescription('Startet deinen interaktiven Daily-Scrum-Assistenten'),
+    .setDescription('Startet Daily oder Abmeldung für deinen Arbeitstag'),
   new SlashCommandBuilder()
     .setName('scrum')
     .setDescription('Daily-Scrum Funktionen')
@@ -963,8 +1278,10 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
 
     if (sub === 'vorschau') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const scan = await weeklyScan();
-      const chunks = splitDiscordText(buildWeeklyReport(scan.entries, scan.unavailableMemberIds));
+      const scans = await weeklyScans();
+      const chunks = splitDiscordText(
+        buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds)
+      );
       await interaction.editReply(chunks[0]);
       for (const chunk of chunks.slice(1)) await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
       return;
@@ -1075,6 +1392,28 @@ async function handlePushDoneButton(interaction: ButtonInteraction): Promise<voi
   await interaction.editReply('✅ Push-Status wurde als erledigt markiert.');
 }
 
+async function handleSicknessAbsence(interaction: ButtonInteraction): Promise<void> {
+  await interaction.deferUpdate();
+  try {
+    const thread = await createAbsence(interaction.user.id, 'Krankheit');
+    drafts.delete(interaction.user.id);
+    await interaction.editReply({
+      content:
+        `🤒 **Für heute als Krankheit (entschuldigt) dokumentiert.**\n` +
+        `Abmeldung: <#${thread.id}>\n\n` +
+        `Bitte melde dich zusätzlich **vor Unterrichtsbeginn um 08:00 Uhr** im bib-Intranet krank:\n${SICKNESS_INTRANET_URL}`,
+      components: []
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'DAILY_ALREADY_EXISTS') {
+      await interaction.editReply({ content: '✅ Für heute liegt bereits ein Daily vor. Eine Abmeldung ist nicht mehr nötig.', components: [] });
+      return;
+    }
+    console.error('Krankheits-Abmeldung konnte nicht erstellt werden.', error);
+    await interaction.editReply({ content: '❌ Die Abmeldung konnte nicht gespeichert werden.', components: [] });
+  }
+}
+
 async function handleButton(interaction: ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
     await interaction.reply({ content: NO_PERMISSION, flags: MessageFlags.Ephemeral });
@@ -1088,6 +1427,36 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
 
   if (interaction.customId === 'daily:start') {
     await startDailyForInteraction(interaction);
+    return;
+  }
+
+  if (interaction.customId === 'daily:work-yes') {
+    const draft = drafts.get(interaction.user.id) ?? { userId: interaction.user.id };
+    drafts.set(interaction.user.id, draft);
+    await interaction.showModal(questionOneModal(draft));
+    return;
+  }
+
+  if (interaction.customId === 'daily:work-no') {
+    await interaction.update({
+      content: '### Warum kannst du heute kein Daily machen?\nWähle den passenden Grund:',
+      components: [absenceReasonRow()]
+    });
+    return;
+  }
+
+  if (interaction.customId === 'absence:sick') {
+    await handleSicknessAbsence(interaction);
+    return;
+  }
+
+  if (interaction.customId === 'absence:appointment') {
+    await interaction.showModal(absenceDetailModal('appointment'));
+    return;
+  }
+
+  if (interaction.customId === 'absence:other') {
+    await interaction.showModal(absenceDetailModal('other'));
     return;
   }
 
@@ -1161,6 +1530,7 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
       }
 
       const thread = await createDailyFromDraft(draft);
+      await cancelActiveAbsenceIfPresent(interaction.user.id);
       drafts.delete(interaction.user.id);
       await interaction.editReply({
         content: `✅ **Daily vollständig abgegeben!**\nDein heutiger Post wurde erstellt: <#${thread.id}>`,
@@ -1176,6 +1546,30 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
         components: []
       });
     }
+  }
+}
+
+async function handleAbsenceModal(interaction: ModalSubmitInteraction): Promise<void> {
+  if (!isTeamMember(interaction.user.id)) {
+    await interaction.reply({ content: NO_PERMISSION, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const detail = interaction.fields.getTextInputValue('reason').trim();
+  const kind: AbsenceKind = interaction.customId.endsWith(':appointment') ? 'Termin' : 'Anderes';
+
+  try {
+    const thread = await createAbsence(interaction.user.id, kind, detail);
+    drafts.delete(interaction.user.id);
+    await interaction.editReply(`🟦 **Für heute abgemeldet.**\nGrund: **${kind}** · ${detail}\nAbmeldung: <#${thread.id}>`);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'DAILY_ALREADY_EXISTS') {
+      await interaction.editReply('✅ Für heute liegt bereits ein Daily vor. Eine Abmeldung ist nicht mehr nötig.');
+      return;
+    }
+    console.error('Abmeldung konnte nicht erstellt werden.', error);
+    await interaction.editReply('❌ Die Abmeldung konnte nicht gespeichert werden.');
   }
 }
 
@@ -1240,6 +1634,11 @@ async function handleMeetingModal(interaction: ModalSubmitInteraction): Promise<
 async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   if (interaction.customId === 'meeting:create') {
     await handleMeetingModal(interaction);
+    return;
+  }
+
+  if (interaction.customId.startsWith('absence:details:')) {
+    await handleAbsenceModal(interaction);
     return;
   }
 
@@ -1370,7 +1769,7 @@ client.on(Events.ThreadCreate, (thread) => {
     }
 
     const content = await starterContent(thread);
-    if (isCompleteDailyContent(content)) return;
+    if (isCompleteDailyContent(content) || matchesMemberAbsenceTitle(thread, assignedMember)) return;
 
     await thread.send(
       `⚠️ Dieser Post zählt noch nicht als vollständiges Daily für **${assignedMember.name}**. ` +
