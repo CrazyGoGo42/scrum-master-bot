@@ -44,6 +44,11 @@ type DailyDraft = {
   pushPending?: string;
 };
 
+type DailyScanResult = {
+  entries: DailyEntry[];
+  unavailableMemberIds: Set<string>;
+};
+
 const drafts = new Map<string, DailyDraft>();
 
 const DAILY_TEMPLATE = `## Seit dem letzten Daily
@@ -59,6 +64,8 @@ Keine
 - Branch: feature/mein-feature
 - Noch zu pushen: Ja`;
 
+const NO_PERMISSION = '⛔ Du gehörst nicht zum konfigurierten Projektteam und hast für diese Funktion keine Zuständigkeit.';
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -68,12 +75,12 @@ const client = new Client({
   ]
 });
 
-function memberName(id: string): string {
-  return config.members.find((member) => member.discordId === id)?.name ?? id;
-}
-
 function teamMember(id: string): TeamMember | undefined {
   return config.members.find((member) => member.discordId === id);
+}
+
+function memberName(id: string): string {
+  return teamMember(id)?.name ?? id;
 }
 
 function isTeamMember(id: string): boolean {
@@ -286,47 +293,70 @@ function matchesMemberDailyTitle(thread: ThreadChannel, member: TeamMember): boo
   return thread.name.toLocaleLowerCase('de-DE').startsWith(`daily scrum ${member.name} `.toLocaleLowerCase('de-DE'));
 }
 
-async function dailyEntriesInRange(start: DateTime, end: DateTime): Promise<DailyEntry[]> {
+async function dailyEntriesForMemberInRange(
+  member: TeamMember,
+  start: DateTime,
+  end: DateTime
+): Promise<DailyEntry[]> {
+  const forum = await getForum(member.dailyForumId);
+  const threads = await allForumThreads(forum);
   const entries: DailyEntry[] = [];
 
-  for (const member of config.members) {
-    const forum = await getForum(member.dailyForumId);
-    const threads = await allForumThreads(forum);
+  for (const thread of threads) {
+    if (!thread.createdAt || !matchesMemberDailyTitle(thread, member)) continue;
 
-    for (const thread of threads) {
-      if (!thread.createdAt || !matchesMemberDailyTitle(thread, member)) continue;
+    const createdAt = toBerlin(thread.createdAt);
+    if (createdAt < start || createdAt > end) continue;
 
-      const createdAt = toBerlin(thread.createdAt);
-      if (createdAt < start || createdAt > end) continue;
+    const content = await starterContent(thread);
+    if (!isCompleteDailyContent(content)) continue;
 
-      const content = await starterContent(thread);
-      if (!isCompleteDailyContent(content)) continue;
-
-      entries.push({
-        thread,
-        ownerId: member.discordId,
-        ownerName: member.name,
-        createdAt,
-        content
-      });
-    }
+    entries.push({
+      thread,
+      ownerId: member.discordId,
+      ownerName: member.name,
+      createdAt,
+      content
+    });
   }
 
   return entries.sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
 }
 
+async function scanDailyEntriesInRange(start: DateTime, end: DateTime): Promise<DailyScanResult> {
+  const entries: DailyEntry[] = [];
+  const unavailableMemberIds = new Set<string>();
+
+  for (const member of config.members) {
+    try {
+      entries.push(...(await dailyEntriesForMemberInRange(member, start, end)));
+    } catch (error) {
+      unavailableMemberIds.add(member.discordId);
+      console.error(
+        `[Daily] Forum für ${member.name} (${member.dailyForumId}) konnte nicht gelesen werden.`,
+        error
+      );
+    }
+  }
+
+  entries.sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
+  return { entries, unavailableMemberIds };
+}
+
 async function dailyEntriesForDate(date = nowBerlin()): Promise<DailyEntry[]> {
-  return dailyEntriesInRange(date.startOf('day'), date.endOf('day'));
+  return (await scanDailyEntriesInRange(date.startOf('day'), date.endOf('day'))).entries;
 }
 
 async function dailyEntriesForWeek(date = nowBerlin()): Promise<DailyEntry[]> {
   const { start, end } = currentWeekRange(date);
-  return dailyEntriesInRange(start, end);
+  return (await scanDailyEntriesInRange(start, end)).entries;
 }
 
-function missingMembers(entries: DailyEntry[]) {
+function missingMembers(entries: DailyEntry[], unavailableMemberIds = new Set<string>()) {
   const submitted = new Set(entries.map((entry) => entry.ownerId));
-  return config.members.filter((member) => !submitted.has(member.discordId));
+  return config.members.filter(
+    (member) => !submitted.has(member.discordId) && !unavailableMemberIds.has(member.discordId)
+  );
 }
 
 function mentionList(ids: string[]): string {
@@ -341,7 +371,7 @@ async function sendDailyOpen(): Promise<void> {
     content:
       `☕ **Daily Scrum gestartet · ${formatDate()}**\n` +
       `Beantwortet die vier kurzen Fragen bis spätestens **12:00 Uhr**. ` +
-      `Nach dem Absenden erstellt der Bot automatisch euren heutigen Daily-Post im persönlichen Forum.`,
+      `Der Bot erkennt euch über eure Discord-ID und erstellt den fertigen Post automatisch im richtigen persönlichen Forum.`,
     components: [dailyStartRow()]
   });
 }
@@ -349,8 +379,8 @@ async function sendDailyOpen(): Promise<void> {
 async function sendDailyReminder(final = false): Promise<void> {
   if (!isWorkday()) return;
 
-  const entries = await dailyEntriesForDate();
-  const missing = missingMembers(entries);
+  const scan = await scanDailyEntriesInRange(nowBerlin().startOf('day'), nowBerlin().endOf('day'));
+  const missing = missingMembers(scan.entries, scan.unavailableMemberIds);
   if (missing.length === 0) return;
 
   const channel = await getScrumChannel();
@@ -370,21 +400,24 @@ async function sendDailyReminder(final = false): Promise<void> {
 async function sendDailyDeadline(): Promise<void> {
   if (!isWorkday()) return;
 
-  const entries = await dailyEntriesForDate();
+  const scan = await scanDailyEntriesInRange(nowBerlin().startOf('day'), nowBerlin().endOf('day'));
   const channel = await getScrumChannel();
-  const latestByOwner = new Map<string, DailyEntry>();
-
-  for (const entry of entries) latestByOwner.set(entry.ownerId, entry);
+  const latestByOwner = new Map(scan.entries.map((entry) => [entry.ownerId, entry]));
 
   const lines = config.members.map((member) => {
+    if (scan.unavailableMemberIds.has(member.discordId)) {
+      return `⚠️ **${member.name}** · Daily-Forum nicht erreichbar`;
+    }
+
     const entry = latestByOwner.get(member.discordId);
     return entry
       ? `✅ **${member.name}** · ${formatTime(entry.createdAt)} Uhr`
       : `❌ **${member.name}** · nicht abgegeben`;
   });
 
+  const availableCount = config.members.length - scan.unavailableMemberIds.size;
   await channel.send(
-    `### Daily Scrum · ${formatDate()}\n${lines.join('\n')}\n\n**Vollständigkeit: ${latestByOwner.size}/${config.members.length}**`
+    `### Daily Scrum · ${formatDate()}\n${lines.join('\n')}\n\n**Vollständigkeit: ${latestByOwner.size}/${availableCount} erreichbaren Foren**`
   );
 }
 
@@ -422,7 +455,11 @@ function containsBlocker(content: string): boolean {
   return !['keine', 'keine blocker', '-', 'nichts', 'aktuell keine'].includes(joined);
 }
 
-function buildWeeklyReport(entries: DailyEntry[], date = nowBerlin()): string {
+function buildWeeklyReport(
+  entries: DailyEntry[],
+  unavailableMemberIds = new Set<string>(),
+  date = nowBerlin()
+): string {
   const { start } = currentWeekRange(date);
   const friday = start.plus({ days: 4 });
   const report: string[] = [
@@ -436,9 +473,14 @@ function buildWeeklyReport(entries: DailyEntry[], date = nowBerlin()): string {
   ];
 
   for (const member of config.members) {
-    const memberEntries = entries.filter((entry) => entry.ownerId === member.discordId);
     report.push(`## ${member.name}`);
 
+    if (unavailableMemberIds.has(member.discordId)) {
+      report.push('- Das zugeordnete Daily-Forum konnte beim Erstellen des Berichts nicht gelesen werden.', '');
+      continue;
+    }
+
+    const memberEntries = entries.filter((entry) => entry.ownerId === member.discordId);
     if (memberEntries.length === 0) {
       report.push('- Für diese Woche wurden keine vollständigen Daily-Scrum-Einträge gefunden.', '');
       continue;
@@ -514,10 +556,15 @@ function splitDiscordText(text: string, maxLength = 1900): string[] {
   return chunks;
 }
 
+async function weeklyScan(): Promise<DailyScanResult> {
+  const { start, end } = currentWeekRange();
+  return scanDailyEntriesInRange(start, end);
+}
+
 async function createWeeklyReport(): Promise<ThreadChannel> {
-  const entries = await dailyEntriesForWeek();
+  const scan = await weeklyScan();
   const forum = await getForum(config.weeklyForumId);
-  const chunks = splitDiscordText(buildWeeklyReport(entries));
+  const chunks = splitDiscordText(buildWeeklyReport(scan.entries, scan.unavailableMemberIds));
 
   const thread = await forum.threads.create({
     name: `Wochenbericht für Herrn Tepper | ${formatDate()}`,
@@ -564,24 +611,24 @@ function previewText(draft: DailyDraft): string {
   return `### Vorschau deines Daily Scrums\n\n${draftContent(draft)}\n\nWenn alles passt, kannst du das Daily jetzt absenden.`;
 }
 
-async function alreadySubmitted(userId: string): Promise<DailyEntry | undefined> {
-  const entries = await dailyEntriesForDate();
-  return entries.find((entry) => entry.ownerId === userId);
+async function alreadySubmitted(userId: string, date = nowBerlin()): Promise<DailyEntry | undefined> {
+  const member = teamMember(userId);
+  if (!member) return undefined;
+
+  const entries = await dailyEntriesForMemberInRange(member, date.startOf('day'), date.endOf('day'));
+  return entries[0];
 }
 
 async function startDailyForInteraction(interaction: ChatInputCommandInteraction | ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
-    await interaction.reply({
-      content: 'Dieser Daily-Assistent ist nur für das konfigurierte Projektteam.',
-      flags: MessageFlags.Ephemeral
-    });
+    await interaction.reply({ content: NO_PERMISSION, flags: MessageFlags.Ephemeral });
     return;
   }
 
   const draft = drafts.get(interaction.user.id) ?? { userId: interaction.user.id };
   drafts.set(interaction.user.id, draft);
 
-  // Wichtig: Vor showModal keine Discord-API-Abfragen. Interactions müssen sehr schnell bestätigt werden.
+  // Vor showModal absichtlich keine Discord-API-Abfrage: Interactions müssen sofort bestätigt werden.
   await interaction.showModal(questionOneModal(draft));
 }
 
@@ -641,10 +688,14 @@ const commands = [
 
 async function replyDailyStatus(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const entries = await dailyEntriesForDate();
-  const latest = new Map(entries.map((entry) => [entry.ownerId, entry]));
+  const scan = await scanDailyEntriesInRange(nowBerlin().startOf('day'), nowBerlin().endOf('day'));
+  const latest = new Map(scan.entries.map((entry) => [entry.ownerId, entry]));
 
   const lines = config.members.map((member) => {
+    if (scan.unavailableMemberIds.has(member.discordId)) {
+      return `⚠️ ${member.name} · Forum nicht erreichbar`;
+    }
+
     const entry = latest.get(member.discordId);
     return entry ? `✅ ${member.name} · ${formatTime(entry.createdAt)} Uhr` : `⏳ ${member.name} · fehlt noch`;
   });
@@ -652,7 +703,34 @@ async function replyDailyStatus(interaction: ChatInputCommandInteraction): Promi
   await interaction.editReply(`### Daily-Status · ${formatDate()}\n${lines.join('\n')}`);
 }
 
+async function replyBotStatus(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const forumLines: string[] = [];
+
+  for (const member of config.members) {
+    try {
+      await getForum(member.dailyForumId);
+      forumLines.push(`✅ ${member.name}: Forum erreichbar`);
+    } catch {
+      forumLines.push(`❌ ${member.name}: ${member.dailyForumId} ist nicht als Forum erreichbar`);
+    }
+  }
+
+  await interaction.editReply(
+    `🟢 **Scrum Master ist online**\n` +
+      `Daily-Scrum Q&A: ✅\n` +
+      `${forumLines.join('\n')}\n` +
+      `Wochenbericht: Freitag 14:00 Uhr\n` +
+      `Zeitzone: ${config.timezone}`
+  );
+}
+
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!isTeamMember(interaction.user.id)) {
+    await interaction.reply({ content: NO_PERMISSION, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
   if (interaction.commandName === 'daily') {
     await startDailyForInteraction(interaction);
     return;
@@ -676,16 +754,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
       return;
     }
 
-    await interaction.reply({
-      content:
-        `🟢 **Scrum Master ist online**\n` +
-        `Daily-Scrum Q&A: ✅\n` +
-        `Persönliche Daily-Foren: 3/3 ✅\n` +
-        `Wochenberichte: ✅\n` +
-        `Teammitglieder: ${config.members.length}/${config.members.length}\n` +
-        `Zeitzone: ${config.timezone}`,
-      flags: MessageFlags.Ephemeral
-    });
+    await replyBotStatus(interaction);
     return;
   }
 
@@ -694,8 +763,8 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
 
     if (sub === 'vorschau') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const entries = await dailyEntriesForWeek();
-      const chunks = splitDiscordText(buildWeeklyReport(entries));
+      const scan = await weeklyScan();
+      const chunks = splitDiscordText(buildWeeklyReport(scan.entries, scan.unavailableMemberIds));
       await interaction.editReply(chunks[0]);
 
       for (const chunk of chunks.slice(1)) {
@@ -735,7 +804,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
 
     if (!member?.permissions.has(PermissionFlagsBits.ManageGuild)) {
       await interaction.reply({
-        content: 'Dafür brauchst du die Berechtigung „Server verwalten“.',
+        content: 'Dafür brauchst du zusätzlich die Berechtigung „Server verwalten“.',
         flags: MessageFlags.Ephemeral
       });
       return;
@@ -769,6 +838,11 @@ async function showPreviewFromButton(interaction: ButtonInteraction, draft: Dail
 }
 
 async function handleButton(interaction: ButtonInteraction): Promise<void> {
+  if (!isTeamMember(interaction.user.id)) {
+    await interaction.reply({ content: NO_PERMISSION, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
   if (interaction.customId === 'daily:start') {
     await startDailyForInteraction(interaction);
     return;
@@ -832,27 +906,43 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   if (interaction.customId === 'daily:submit') {
     await interaction.deferUpdate();
 
-    const existing = await alreadySubmitted(interaction.user.id);
-    if (existing) {
+    try {
+      const existing = await alreadySubmitted(interaction.user.id);
+      if (existing) {
+        drafts.delete(interaction.user.id);
+        await interaction.editReply({
+          content: `✅ Dein Daily für heute ist bereits abgegeben: <#${existing.thread.id}>`,
+          components: []
+        });
+        return;
+      }
+
+      const thread = await createDailyFromDraft(draft);
       drafts.delete(interaction.user.id);
       await interaction.editReply({
-        content: `✅ Dein Daily für heute ist bereits abgegeben: <#${existing.thread.id}>`,
+        content: `✅ **Daily vollständig abgegeben!**\nDein heutiger Post wurde erstellt: <#${thread.id}>`,
         components: []
       });
-      return;
+    } catch (error) {
+      console.error(`[Daily] Daily für ${memberName(interaction.user.id)} konnte nicht veröffentlicht werden.`, error);
+      const member = teamMember(interaction.user.id);
+      await interaction.editReply({
+        content:
+          `❌ Dein Daily konnte nicht veröffentlicht werden. ` +
+          `Das für dich konfigurierte Forum${member ? ` (${member.dailyForumId})` : ''} ist nicht erreichbar oder kein Discord-Forum.`,
+        components: []
+      });
     }
-
-    const thread = await createDailyFromDraft(draft);
-    drafts.delete(interaction.user.id);
-    await interaction.editReply({
-      content: `✅ **Daily vollständig abgegeben!**\nDein heutiger Post wurde erstellt: <#${thread.id}>`,
-      components: []
-    });
   }
 }
 
 async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   if (!interaction.customId.startsWith('daily:')) return;
+
+  if (!isTeamMember(interaction.user.id)) {
+    await interaction.reply({ content: NO_PERMISSION, flags: MessageFlags.Ephemeral });
+    return;
+  }
 
   const draft = drafts.get(interaction.user.id) ?? { userId: interaction.user.id };
   drafts.set(interaction.user.id, draft);
@@ -908,12 +998,17 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   }
 }
 
-async function validateConfiguredChannels(): Promise<void> {
-  await getScrumChannel();
-  await getForum(config.weeklyForumId);
-
+async function logDailyForumHealth(): Promise<void> {
   for (const member of config.members) {
-    await getForum(member.dailyForumId);
+    try {
+      await getForum(member.dailyForumId);
+      console.log(`Daily-Forum ${member.name}: OK (${member.dailyForumId})`);
+    } catch (error) {
+      console.error(
+        `Daily-Forum ${member.name}: FEHLER (${member.dailyForumId}). Der Bot bleibt online; nur ${member.name}s Daily-Routing ist betroffen.`,
+        error
+      );
+    }
   }
 }
 
@@ -923,17 +1018,28 @@ client.once(Events.ClientReady, async (readyClient) => {
 
   try {
     const guild = await client.guilds.fetch(config.guildId);
-    await validateConfiguredChannels();
     await guild.commands.set(commands);
     console.log(`Slash Commands auf ${guild.name} registriert.`);
-    console.log('Daily-Foren für Joline, David und Duy sind erreichbar.');
   } catch (error) {
-    console.error(
-      'Server oder konfigurierte Kanäle konnten nicht geladen werden. Prüfe die IDs und Bot-Berechtigungen.',
-      error
-    );
+    console.error(`Server ${config.guildId} konnte nicht geladen oder Commands konnten nicht registriert werden.`, error);
     return;
   }
+
+  try {
+    await getScrumChannel();
+    console.log(`Scrum-Status-Channel: OK (${config.scrumChannelId})`);
+  } catch (error) {
+    console.error(`Scrum-Status-Channel ${config.scrumChannelId} ist nicht erreichbar.`, error);
+  }
+
+  try {
+    await getForum(config.weeklyForumId);
+    console.log(`Wochenbericht-Forum: OK (${config.weeklyForumId})`);
+  } catch (error) {
+    console.error(`Wochenbericht-Forum ${config.weeklyForumId} ist nicht erreichbar oder kein Forum.`, error);
+  }
+
+  await logDailyForumHealth();
 
   cron.schedule(config.cron.dailyOpen, () => void sendDailyOpen().catch(console.error), { timezone: config.timezone });
   cron.schedule(config.cron.dailyReminder, () => void sendDailyReminder(false).catch(console.error), { timezone: config.timezone });
@@ -941,19 +1047,34 @@ client.once(Events.ClientReady, async (readyClient) => {
   cron.schedule(config.cron.dailyDeadline, () => void sendDailyDeadline().catch(console.error), { timezone: config.timezone });
   cron.schedule(config.cron.gitReminder, () => void sendGitReminder().catch(console.error), { timezone: config.timezone });
   cron.schedule(config.cron.weeklyReport, () => void weeklyReportJob().catch(console.error), { timezone: config.timezone });
+
+  console.log('Scrum Master ist bereit.');
 });
 
 client.on(Events.ThreadCreate, (thread) => {
-  const member = memberByForumId(thread.parentId);
-  if (!member || thread.ownerId === client.user?.id) return;
+  const assignedMember = memberByForumId(thread.parentId);
+  if (!assignedMember || thread.ownerId === client.user?.id) return;
 
   void (async () => {
+    if (!thread.ownerId || !isTeamMember(thread.ownerId)) {
+      await thread.send(NO_PERMISSION);
+      return;
+    }
+
+    if (thread.ownerId !== assignedMember.discordId) {
+      await thread.send(
+        `⚠️ Dieses Daily-Forum ist **${assignedMember.name}** zugeordnet. ` +
+          `Dein Daily wird über **/daily** automatisch in dein eigenes Forum einsortiert.`
+      );
+      return;
+    }
+
     const content = await starterContent(thread);
     if (isCompleteDailyContent(content)) return;
 
     await thread.send(
-      `⚠️ Dieser Post zählt noch nicht als vollständiges Daily für **${member.name}**. ` +
-      `Nutze am einfachsten **/daily** oder **/bot struktur**.`
+      `⚠️ Dieser Post zählt noch nicht als vollständiges Daily für **${assignedMember.name}**. ` +
+        `Nutze am einfachsten **/daily** oder **/bot struktur**.`
     );
   })().catch(console.error);
 });
