@@ -22,6 +22,7 @@ export const config = {
   meetingCreateChannelId: required('MEETING_CREATE_CHANNEL_ID'),
   meetingVoiceChannelId: required('MEETING_VOICE_CHANNEL_ID'),
   timezone: process.env.TIMEZONE || 'Europe/Berlin',
+  trackingStartDate: process.env.TRACKING_START_DATE || '2026-09-28',
   pushReminderAfterHours: numberValue('PUSH_REMINDER_AFTER_HOURS', 6),
   cron: {
     dailyOpen: process.env.DAILY_OPEN_CRON || '0 9 * * 1-5',
