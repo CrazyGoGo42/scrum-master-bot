@@ -1,6 +1,6 @@
 # Scrum Master Bot
 
-Discord Scrum-Master-Bot für das Hauptprojekt. Der Bot organisiert flexible Daily Scrums, Erinnerungen, persönliche Daily-Foren, Meetings und Wochenberichte.
+Discord Scrum-Master-Bot für das Hauptprojekt. Der Bot organisiert Daily Scrums, Abmeldungen, Erinnerungen, persönliche Daily-Foren, Meetings und Wochenberichte.
 
 > Der Bot hat **keinen Zugriff auf das private Hauptprojekt-GitHub-Repository**. Git-/Push-Hinweise basieren ausschließlich auf den Angaben im Daily.
 
@@ -21,15 +21,29 @@ Daily Scrum David 28.09.2026
 Daily Scrum Duy 28.09.2026
 ```
 
-## Flexible Daily Scrums
+Im Daily selbst wird zusätzlich die Erstellzeit dokumentiert:
 
-Es gibt bewusst **keine 12-Uhr-Deadline**. Wer morgens arbeitet, kann sein Daily früh machen. Wer tagsüber Schule, Arbeit oder andere Verpflichtungen hat, kann es nachmittags oder abends machen.
+```text
+Daily erstellt: 15:34 Uhr
+```
 
-Der Bot öffnet die Daily-Runde werktags um 09:00 Uhr und erinnert nur freundlich, solange für den aktuellen Tag noch kein Daily vorliegt.
+## Wann wird das Daily gemacht?
 
-### Q&A
+Das Daily wird **immer unmittelbar vor Beginn der eigenen Projektarbeit für diesen Tag** gemacht.
 
-`/daily` oder der Button **Daily ausfüllen** startet vier Fragen:
+Es gibt keine feste Startzeit. Das Team kann morgens, nachmittags, abends oder nachts arbeiten. Entscheidend ist:
+
+> **Daily zuerst, danach Projektarbeit.**
+
+Reguläre Daily-Tage sind **Montag bis Freitag**. Samstag und Sonntag sind keine verpflichtenden Projekttage und benötigen deshalb kein Daily. Wer am Wochenende freiwillig am Projekt arbeitet, kann trotzdem ein Daily starten und die Arbeit dokumentieren.
+
+## Interaktives Daily / Abmeldung
+
+`/daily` oder der Button **Daily ausfüllen** startet zunächst die Frage, ob die Person an diesem Tag ein Daily machen kann.
+
+### Ja, Daily starten
+
+Der Bot führt durch vier Fragen:
 
 1. Was wurde seit dem letzten Daily erledigt?
 2. Was möchtest du heute machen?
@@ -38,18 +52,53 @@ Der Bot öffnet die Daily-Runde werktags um 09:00 Uhr und erinnert nur freundlic
 
 Nach einer privaten Vorschau wird erst mit **Daily absenden** der Forum-Post erstellt. Ein angefangenes, aber nicht abgesendetes Q&A zählt nicht.
 
+### Nein, abmelden
+
+Wer an einem regulären Projekttag kein Daily machen kann, kann sich direkt im selben Dialog abmelden.
+
+Mögliche Gründe:
+
+- **Krankheit** → wird als `Krankheit (entschuldigt)` dokumentiert
+- **Termin** → zusätzlicher Grund / Termin wird abgefragt
+- **Anderes** → ein eigener Grund muss angegeben werden
+
+Eine Abmeldung wird im persönlichen Forum als eigener Post gespeichert, zum Beispiel:
+
+```text
+Abmeldung Joline 28.09.2026
+```
+
+Abgemeldete Personen werden für diesen Tag nicht mehr wegen eines fehlenden Dailys gepingt und zählen nicht als inaktiv.
+
+Bei **Krankheit** erinnert der Bot zusätzlich daran, die Krankmeldung im bib-Intranet vorzunehmen. Laut Projektregel soll dies vor Unterrichtsbeginn um **08:00 Uhr** erfolgen:
+
+https://intranet.bib.de/tiki-index.php?page=welcome
+
+Falls nach einer Abmeldung später doch ein Daily eingereicht wird, hat das Daily Vorrang und die Abmeldung wird als aufgehoben markiert.
+
 ## Tagesablauf
 
 | Uhrzeit | Aktion |
 |---|---|
 | 09:00 | Daily-Runde wird geöffnet |
-| 15:00 | freundliche Erinnerung an Personen ohne Daily |
-| 20:00 | zweite Erinnerung, falls noch kein Daily vorliegt |
-| 00:05 | fehlende Dailies des abgeschlossenen Arbeitstags werden dokumentiert |
+| 15:00 | freundliche Erinnerung an Personen ohne Daily oder Abmeldung |
+| 20:00 | zweite Erinnerung, falls weiterhin keine Dokumentation vorliegt |
+| 00:05 | fehlende Dailies / Abmeldungen des abgeschlossenen Arbeitstags werden dokumentiert |
 | Freitag 14:00 | Wochenbericht als Entwurf |
-| stündlich | Prüfung, ob eine Push-Erinnerung fällig ist |
+| regelmäßig | Prüfung, ob eine Push-Erinnerung fällig ist |
 
-Nach **2 Arbeitstagen in Folge ohne Daily** dokumentiert der Bot die Inaktivität ausdrücklich im Scrum-Status-Channel. Das ist eine Projektdokumentation, keine automatische Sanktion.
+Nach **2 Arbeitstagen in Folge ohne Daily oder Abmeldung** dokumentiert der Bot die Inaktivität ausdrücklich im Scrum-Status-Channel. Das ist Projektdokumentation, keine automatische Sanktion.
+
+## Daily-Status
+
+`/scrum status` zeigt an Werktagen pro Person:
+
+- `✅` Daily vorhanden, inklusive Uhrzeit
+- `🟦` für den Tag abgemeldet
+- `⏳` noch keine Dokumentation
+- `⚠️` Forum nicht erreichbar
+
+Am Wochenende meldet der Bot stattdessen, dass **kein regulärer Projekttag** vorliegt. Es wird niemand als fehlend markiert.
 
 ## Push-Erinnerung
 
@@ -61,12 +110,13 @@ Die Erinnerung ist **keine Pflicht** und kontrolliert GitHub nicht.
 
 ## Persönliche Daily-Foren
 
-Jedes Teammitglied besitzt ein eigenes Discord-Forum. Der Bot erstellt jeden vollständigen Daily als neuen Post des jeweiligen Tages.
+Jedes Teammitglied besitzt ein eigenes Discord-Forum. Der Bot erstellt jeden vollständigen Daily oder eine Abmeldung als neuen Post des jeweiligen Tages.
 
 ```text
 Joline-Forum
 ├── Daily Scrum Joline 28.09.2026
-├── Daily Scrum Joline 29.09.2026
+├── Abmeldung Joline 29.09.2026
+├── Daily Scrum Joline 30.09.2026
 └── ...
 ```
 
@@ -74,14 +124,16 @@ Eine falsch konfigurierte Forum-ID eines Teammitglieds legt den restlichen Bot n
 
 ## Wochenbericht
 
-Freitags um **14:00 Uhr** erstellt der Bot automatisch einen Wochenbericht im Wochenbericht-Forum. Grundlage sind alle bis zu diesem Zeitpunkt vorhandenen vollständigen Dailies der laufenden Woche.
+Freitags um **14:00 Uhr** erstellt der Bot automatisch einen Wochenbericht im Wochenbericht-Forum. Grundlage sind die bis zu diesem Zeitpunkt vorhandenen vollständigen Dailies und Abmeldungen der laufenden Woche.
 
 Der Bericht enthält:
 
 - Tätigkeiten von Joline, David und Duy
+- Uhrzeit der jeweiligen Dailies
 - geplante Arbeiten
 - dokumentierte Blocker
-- fehlende abgeschlossene Daily-Tage
+- dokumentierte Abwesenheiten
+- fehlende abgeschlossene Arbeitstage ohne Daily oder Abmeldung
 - aktuellen Stand / nächste Schritte
 
 Ein später am Freitag eingereichtes Daily kann über `/wochenbericht erstellen` in einem neu erzeugten Bericht berücksichtigt werden.
@@ -108,7 +160,9 @@ Im Meeting-Erstellen-Channel akzeptiert der Bot absichtlich keine anderen Projek
 
 Die Info erklärt unter anderem:
 
-- Daily-Ablauf
+- Regel `Daily zuerst, danach Projektarbeit`
+- Wochenendregel
+- Abmeldung bei Krankheit, Termin oder anderem Grund
 - Erinnerungszeiten
 - Push-Erinnerung
 - Wochenbericht
@@ -127,9 +181,9 @@ Buttons und Modals prüfen die User-ID ebenfalls erneut.
 
 ## Slash Commands
 
-- `/daily` – interaktives Daily starten
-- `/scrum status` – heutigen Daily-Status anzeigen
-- `/scrum heute` – heutigen Daily-Status anzeigen
+- `/daily` – Daily oder Abmeldung für den Arbeitstag starten
+- `/scrum status` – heutigen Daily-/Abmeldestatus anzeigen
+- `/scrum heute` – heutigen Status anzeigen
 - `/bot struktur` – private Daily-Vorlage anzeigen
 - `/bot status` – Bot- und Channel-Konfiguration prüfen
 - `/bot info` – öffentliche Bot-Dokumentation aktualisieren
@@ -166,7 +220,7 @@ DAILY_EVENING_REMINDER_CRON=0 20 * * 1-5
 DAILY_MISSING_REPORT_CRON=5 0 * * 2-6
 
 PUSH_REMINDER_AFTER_HOURS=6
-PUSH_REMINDER_CHECK_CRON=0 * * * *
+PUSH_REMINDER_CHECK_CRON=*/10 * * * *
 
 WEEKLY_REPORT_CRON=0 14 * * 5
 ```
