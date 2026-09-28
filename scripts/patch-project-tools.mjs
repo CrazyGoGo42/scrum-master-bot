@@ -32,7 +32,7 @@ replaceOnce(
 
 replaceOnce(
   'const chunks = splitDiscordText(botInfoText());',
-  "const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/bot meeting` wählst du zuerst per Button den Ort: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort fragt der Bot anschließend nach dem Link. Danach öffnet sich das Formular für Titel, Datum, Uhrzeit, Dauer und Agenda. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
+  "const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/meeting` wählst du zuerst per Button den Ort: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort fragt der Bot anschließend nach dem Link. Danach öffnet sich das Formular für Titel, Datum, Uhrzeit, Dauer und Agenda. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
   'Info-Text erweitern'
 );
 
@@ -44,8 +44,61 @@ replaceOnce(
 
 replaceOnce(
   '].map((command) => command.toJSON());',
-  '].map((command) => command.toJSON()).concat(projectCommands);',
-  'Projekt-Commands registrieren'
+  `].map((command) => command.toJSON());
+const botCommandIndex = commands.findIndex((command) => command.name === 'bot');
+if (botCommandIndex >= 0) {
+    commands.splice(
+        botCommandIndex,
+        1,
+        new SlashCommandBuilder()
+            .setName('meeting')
+            .setDescription('Erstellt ein neues Meeting im Meeting-Channel')
+            .toJSON(),
+        new SlashCommandBuilder()
+            .setName('info')
+            .setDescription('Aktualisiert die öffentliche Bot-Übersicht im Info-Channel')
+            .toJSON(),
+        new SlashCommandBuilder()
+            .setName('status')
+            .setDescription('Zeigt den Status des Scrum-Master-Bots')
+            .toJSON()
+    );
+}
+commands.push(...projectCommands);`,
+  'Projekt-Commands registrieren und Bot-Präfix entfernen'
+);
+
+replaceOnce(
+  "    const meetingCommand = isBotSubcommand(interaction, 'meeting');\n    const infoCommand = isBotSubcommand(interaction, 'info');",
+  "    const meetingCommand = interaction.commandName === 'meeting';\n    const infoCommand = interaction.commandName === 'info';",
+  'Standalone Meeting und Info erkennen'
+);
+
+replaceOnce(
+  "    if (interaction.commandName === 'bot') {",
+  `    if (interaction.commandName === 'meeting') {
+        await interaction.reply({
+            content: '### Wo findet das Meeting statt?\\nWähle zuerst den Meeting-Ort. Danach öffnet sich das eigentliche Meeting-Formular.',
+            components: [meetingVenueChoiceRow()],
+            flags: MessageFlags.Ephemeral
+        });
+        return;
+    }
+
+    if (interaction.commandName === 'info') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        await publishBotInfo();
+        await interaction.editReply(\`✅ Bot-Übersicht in <#\${config.infoChannelId}> wurde aktualisiert.\`);
+        return;
+    }
+
+    if (interaction.commandName === 'status') {
+        await replyBotStatus(interaction);
+        return;
+    }
+
+    if (interaction.commandName === 'bot') {`,
+  'Standalone Command Handler'
 );
 
 replaceOnce(
@@ -62,7 +115,7 @@ replaceOnce(
 
 replaceOnce(
   "    if (!interaction.customId.startsWith('daily:'))\n        return;\n    const draft = drafts.get(interaction.user.id);",
-  "    if (interaction.customId === 'meeting:venue:discord' || interaction.customId === 'meeting:venue:alfaview') {\n        const kind = interaction.customId.endsWith(':discord') ? 'discord' : 'alfaview';\n        const meetingVenueError = selectMeetingVenue(interaction.user.id, kind);\n        if (meetingVenueError) {\n            await interaction.reply({ content: `❌ ${meetingVenueError}`, flags: MessageFlags.Ephemeral });\n            return;\n        }\n        await interaction.showModal(meetingModal());\n        return;\n    }\n    if (interaction.customId === 'meeting:venue:external') {\n        await interaction.showModal(externalMeetingLinkModal());\n        return;\n    }\n    if (interaction.customId === 'meeting:venue:continue') {\n        if (!hasMeetingVenue(interaction.user.id)) {\n            await interaction.reply({\n                content: '❌ Die Meeting-Ort-Auswahl ist abgelaufen. Bitte starte **/bot meeting** erneut.',\n                flags: MessageFlags.Ephemeral\n            });\n            return;\n        }\n        await interaction.showModal(meetingModal());\n        return;\n    }\n    if (!interaction.customId.startsWith('daily:'))\n        return;\n    const draft = drafts.get(interaction.user.id);",
+  "    if (interaction.customId === 'meeting:venue:discord' || interaction.customId === 'meeting:venue:alfaview') {\n        const kind = interaction.customId.endsWith(':discord') ? 'discord' : 'alfaview';\n        const meetingVenueError = selectMeetingVenue(interaction.user.id, kind);\n        if (meetingVenueError) {\n            await interaction.reply({ content: `❌ ${meetingVenueError}`, flags: MessageFlags.Ephemeral });\n            return;\n        }\n        await interaction.showModal(meetingModal());\n        return;\n    }\n    if (interaction.customId === 'meeting:venue:external') {\n        await interaction.showModal(externalMeetingLinkModal());\n        return;\n    }\n    if (interaction.customId === 'meeting:venue:continue') {\n        if (!hasMeetingVenue(interaction.user.id)) {\n            await interaction.reply({\n                content: '❌ Die Meeting-Ort-Auswahl ist abgelaufen. Bitte starte **/meeting** erneut.',\n                flags: MessageFlags.Ephemeral\n            });\n            return;\n        }\n        await interaction.showModal(meetingModal());\n        return;\n    }\n    if (!interaction.customId.startsWith('daily:'))\n        return;\n    const draft = drafts.get(interaction.user.id);",
   'Meeting-Ort Buttons'
 );
 
@@ -74,7 +127,7 @@ replaceOnce(
 
 replaceOnce(
   'const timestamp = Math.floor(start.toSeconds());',
-  "const meetingVenue = consumeMeetingVenue(interaction.user.id);\n    if (!meetingVenue) {\n        await interaction.reply({\n            content: '❌ Die Meeting-Ort-Auswahl ist abgelaufen. Bitte starte **/bot meeting** erneut.',\n            flags: MessageFlags.Ephemeral\n        });\n        return;\n    }\n    const timestamp = Math.floor(start.toSeconds());",
+  "const meetingVenue = consumeMeetingVenue(interaction.user.id);\n    if (!meetingVenue) {\n        await interaction.reply({\n            content: '❌ Die Meeting-Ort-Auswahl ist abgelaufen. Bitte starte **/meeting** erneut.',\n            flags: MessageFlags.Ephemeral\n        });\n        return;\n    }\n    const timestamp = Math.floor(start.toSeconds());",
   'Meeting-Ort laden'
 );
 
@@ -119,6 +172,13 @@ replaceOnce(
   "    if (interaction.isModalSubmit() && !interaction.customId.startsWith('project:'))\n        void handleModal(interaction).catch(console.error);",
   'Doppelte Modal-Verarbeitung verhindern'
 );
+
+source = source
+  .replaceAll('/bot meeting', '/meeting')
+  .replaceAll('/bot info', '/info')
+  .replaceAll('/bot status', '/status')
+  .replaceAll('**/bot struktur**', '**/daily**')
+  .replaceAll('`/bot struktur` · Vorlage  •  ', '');
 
 await writeFile(file, source, 'utf8');
 console.log('[project-tools patch] Projekttools wurden in dist/index.js integriert.');
