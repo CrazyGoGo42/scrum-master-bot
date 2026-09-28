@@ -78,5 +78,17 @@ replaceOnce(
   'Doppelte Command-Verarbeitung verhindern'
 );
 
+replaceOnce(
+  '    if (interaction.isButton())\n        void handleButton(interaction).catch(console.error);',
+  "    if (interaction.isButton() && !interaction.customId.startsWith('project:'))\n        void handleButton(interaction).catch(console.error);",
+  'Doppelte Button-Verarbeitung verhindern'
+);
+
+replaceOnce(
+  '    if (interaction.isModalSubmit())\n        void handleModal(interaction).catch(console.error);',
+  "    if (interaction.isModalSubmit() && !interaction.customId.startsWith('project:'))\n        void handleModal(interaction).catch(console.error);",
+  'Doppelte Modal-Verarbeitung verhindern'
+);
+
 await writeFile(file, source, 'utf8');
 console.log('[project-tools patch] Projekttools wurden in dist/index.js integriert.');
