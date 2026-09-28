@@ -4,7 +4,10 @@ import {
   ButtonStyle,
   Client,
   GuildScheduledEventEntityType,
-  GuildScheduledEventPrivacyLevel
+  GuildScheduledEventPrivacyLevel,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
 } from 'discord.js';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
@@ -42,6 +45,53 @@ function externalVenueLabel(value: string): { label: string; buttonLabel: string
   return { label: 'Externer Meeting-Link', buttonLabel: 'Meeting öffnen' };
 }
 
+export function meetingVenueChoiceRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('meeting:venue:discord')
+      .setLabel('Discord Voice')
+      .setEmoji('🔊')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('meeting:venue:alfaview')
+      .setLabel('Alfaview')
+      .setEmoji('🟠')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('meeting:venue:external')
+      .setLabel('Anderer Link')
+      .setEmoji('🔗')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+export function externalMeetingLinkModal(): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId('meeting:venue-external')
+    .setTitle('Externer Meeting-Link')
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('link')
+          .setLabel('Teams- oder anderer Meeting-Link')
+          .setPlaceholder('https://...')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(1000)
+      )
+    );
+}
+
+export function meetingVenueContinueRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('meeting:venue:continue')
+      .setLabel('Meetingdetails ausfüllen')
+      .setEmoji('➡️')
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
 export function selectMeetingVenue(userId: string, kind: string, customUrl?: string | null): string | undefined {
   if (kind === 'discord') {
     pendingVenues.set(userId, {
@@ -69,7 +119,7 @@ export function selectMeetingVenue(userId: string, kind: string, customUrl?: str
 
   if (kind === 'external') {
     const url = customUrl?.trim();
-    if (!url) return 'Für **Anderer Link** musst du beim Befehl zusätzlich das Feld `link` angeben, z. B. einen Teams-Link.';
+    if (!url) return 'Bitte gib einen Teams- oder anderen http/https-Meeting-Link ein.';
     if (!validHttpUrl(url)) return 'Der angegebene Meeting-Link ist keine gültige http/https-URL.';
 
     const labels = externalVenueLabel(url);
@@ -83,6 +133,10 @@ export function selectMeetingVenue(userId: string, kind: string, customUrl?: str
   }
 
   return 'Unbekannter Meeting-Ort. Bitte Discord Voice, Alfaview oder Anderer Link auswählen.';
+}
+
+export function hasMeetingVenue(userId: string): boolean {
+  return pendingVenues.has(userId);
 }
 
 export function consumeMeetingVenue(userId: string): MeetingVenue | undefined {
