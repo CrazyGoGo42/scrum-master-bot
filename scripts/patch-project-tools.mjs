@@ -14,7 +14,7 @@ function replaceOnce(search, replacement, label) {
 
 replaceOnce(
   "import { config } from './config.js';\n",
-  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, externalMeetingLinkModal, hasMeetingVenue, meetingLocationRow, meetingVenueChoiceRow, meetingVenueContinueRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\n",
+  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, externalMeetingLinkModal, hasMeetingVenue, meetingLocationRow, meetingVenueChoiceRow, meetingVenueContinueRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\nimport { recordMeeting, weeklyProjectReportSection } from './weekly-project.js';\n",
   'Imports'
 );
 
@@ -145,8 +145,14 @@ replaceOnce(
 
 replaceOnce(
   "    await message.react('✅').catch(() => undefined);\n    await message.react('❌').catch(() => undefined);",
-  "    await message.react('✅').catch(() => undefined);\n    await message.react('❌').catch(() => undefined);\n    const scheduledEventUrl = await createScheduledMeeting(client, title, start, end, agenda, meetingVenue);\n    if (scheduledEventUrl) {\n        await interaction.followUp({\n            content: `📅 Discord-Termin erstellt: ${scheduledEventUrl}`,\n            flags: MessageFlags.Ephemeral\n        });\n    }",
-  'Discord Scheduled Event'
+  "    await message.react('✅').catch(() => undefined);\n    await message.react('❌').catch(() => undefined);\n    const scheduledEventUrl = await createScheduledMeeting(client, title, start, end, agenda, meetingVenue);\n    await recordMeeting({\n        messageId: message.id,\n        title,\n        start,\n        end,\n        agenda,\n        venue: meetingVenue,\n        creatorId: interaction.user.id,\n        scheduledEventUrl\n    }).catch((error) => console.error('[Meeting] Meeting konnte nicht für den Wochenbericht gespeichert werden.', error));\n    if (scheduledEventUrl) {\n        await interaction.followUp({\n            content: `📅 Discord-Termin erstellt: ${scheduledEventUrl}`,\n            flags: MessageFlags.Ephemeral\n        });\n    }",
+  'Discord Scheduled Event und Meeting-Historie'
+);
+
+replaceOnce(
+  "  return report.join('\\n');",
+  "  return report.join('\\n') + weeklyProjectReportSection();",
+  'Meeting-Daten in Wochenbericht'
 );
 
 replaceOnce(
@@ -178,7 +184,11 @@ source = source
   .replaceAll('/bot info', '/info')
   .replaceAll('/bot status', '/status')
   .replaceAll('**/bot struktur**', '**/daily**')
-  .replaceAll('`/bot struktur` · Vorlage  •  ', '');
+  .replaceAll('`/bot struktur` · Vorlage  •  ', '')
+  .replaceAll(
+    'Der Bericht wurde automatisch und ausschließlich aus den Daily-Scrum-Einträgen und Abmeldungen seit Beginn der Erfassung erstellt.',
+    'Der Bericht wurde automatisch aus den Daily-Scrum-Einträgen, Abmeldungen sowie den dokumentierten Meeting- und Projekt-Einträgen seit Beginn der Erfassung erstellt.'
+  );
 
 await writeFile(file, source, 'utf8');
 console.log('[project-tools patch] Projekttools wurden in dist/index.js integriert.');
