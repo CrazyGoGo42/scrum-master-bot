@@ -14,7 +14,7 @@ function replaceOnce(search, replacement, label) {
 
 replaceOnce(
   "import { config } from './config.js';\n",
-  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, meetingLocationRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\n",
+  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, externalMeetingLinkModal, hasMeetingVenue, meetingLocationRow, meetingVenueChoiceRow, meetingVenueContinueRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\n",
   'Imports'
 );
 
@@ -32,7 +32,7 @@ replaceOnce(
 
 replaceOnce(
   'const chunks = splitDiscordText(botInfoText());',
-  "const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/bot meeting` wird der Ort ausgewählt: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort kann direkt ein eigener Link angegeben werden. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
+  "const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/bot meeting` wählst du zuerst per Button den Ort: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort fragt der Bot anschließend nach dem Link. Danach öffnet sich das Formular für Titel, Datum, Uhrzeit, Dauer und Agenda. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
   'Info-Text erweitern'
 );
 
@@ -43,12 +43,6 @@ replaceOnce(
 );
 
 replaceOnce(
-  "sub.setName('meeting').setDescription('Erstellt ein neues Meeting im Meeting-Channel')",
-  "sub.setName('meeting')\n            .setDescription('Erstellt ein neues Meeting im Meeting-Channel')\n            .addStringOption((option) => option\n                .setName('ort')\n                .setDescription('Wo findet das Meeting statt?')\n                .setRequired(true)\n                .addChoices(\n                    { name: 'Discord Voice', value: 'discord' },\n                    { name: 'Alfaview', value: 'alfaview' },\n                    { name: 'Anderer Link (z. B. Teams)', value: 'external' }\n                ))\n            .addStringOption((option) => option\n                .setName('link')\n                .setDescription('Nur bei „Anderer Link“: Teams- oder anderer Meeting-Link'))",
-  'Meeting-Ort Option'
-);
-
-replaceOnce(
   '].map((command) => command.toJSON());',
   '].map((command) => command.toJSON()).concat(projectCommands);',
   'Projekt-Commands registrieren'
@@ -56,14 +50,26 @@ replaceOnce(
 
 replaceOnce(
   "await interaction.showModal(meetingModal());",
-  "const meetingVenueError = selectMeetingVenue(\n                interaction.user.id,\n                interaction.options.getString('ort', true),\n                interaction.options.getString('link')\n            );\n            if (meetingVenueError) {\n                await interaction.reply({ content: `❌ ${meetingVenueError}`, flags: MessageFlags.Ephemeral });\n                return;\n            }\n            await interaction.showModal(meetingModal());",
-  'Meeting-Ort merken'
+  "await interaction.reply({\n                content: '### Wo findet das Meeting statt?\\nWähle zuerst den Meeting-Ort. Danach öffnet sich das eigentliche Meeting-Formular.',\n                components: [meetingVenueChoiceRow()],\n                flags: MessageFlags.Ephemeral\n            });",
+  'Meeting-Ort Auswahl anzeigen'
 );
 
 replaceOnce(
   "        if (sub === 'erstellen') {",
   "        if (sub === 'export') {\n            await interaction.deferReply({ flags: MessageFlags.Ephemeral });\n            const scans = await weeklyScans();\n            const report = buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n            await interaction.editReply({\n                content: '📄 Wochenbericht als Markdown-Datei:',\n                files: [weeklyMarkdownAttachment(report)]\n            });\n            return;\n        }\n\n        if (sub === 'erstellen') {",
   'Wochenbericht Export Handler'
+);
+
+replaceOnce(
+  "    if (!interaction.customId.startsWith('daily:'))\n        return;",
+  "    if (interaction.customId === 'meeting:venue:discord' || interaction.customId === 'meeting:venue:alfaview') {\n        const kind = interaction.customId.endsWith(':discord') ? 'discord' : 'alfaview';\n        const meetingVenueError = selectMeetingVenue(interaction.user.id, kind);\n        if (meetingVenueError) {\n            await interaction.reply({ content: `❌ ${meetingVenueError}`, flags: MessageFlags.Ephemeral });\n            return;\n        }\n        await interaction.showModal(meetingModal());\n        return;\n    }\n    if (interaction.customId === 'meeting:venue:external') {\n        await interaction.showModal(externalMeetingLinkModal());\n        return;\n    }\n    if (interaction.customId === 'meeting:venue:continue') {\n        if (!hasMeetingVenue(interaction.user.id)) {\n            await interaction.reply({\n                content: '❌ Die Meeting-Ort-Auswahl ist abgelaufen. Bitte starte **/bot meeting** erneut.',\n                flags: MessageFlags.Ephemeral\n            });\n            return;\n        }\n        await interaction.showModal(meetingModal());\n        return;\n    }\n    if (!interaction.customId.startsWith('daily:'))\n        return;",
+  'Meeting-Ort Buttons'
+);
+
+replaceOnce(
+  "async function handleModal(interaction) {\n    if (interaction.customId === 'meeting:create') {",
+  "async function handleModal(interaction) {\n    if (interaction.customId === 'meeting:venue-external') {\n        if (!isTeamMember(interaction.user.id)) {\n            await interaction.reply({ content: NO_PERMISSION, flags: MessageFlags.Ephemeral });\n            return;\n        }\n        if (interaction.channelId !== config.meetingCreateChannelId) {\n            await interaction.reply({\n                content: `Meetings werden nur in <#${config.meetingCreateChannelId}> erstellt.`,\n                flags: MessageFlags.Ephemeral\n            });\n            return;\n        }\n        const meetingVenueError = selectMeetingVenue(\n            interaction.user.id,\n            'external',\n            interaction.fields.getTextInputValue('link')\n        );\n        if (meetingVenueError) {\n            await interaction.reply({ content: `❌ ${meetingVenueError}`, flags: MessageFlags.Ephemeral });\n            return;\n        }\n        await interaction.reply({\n            content: '🔗 **Meeting-Link gespeichert.** Jetzt fehlen nur noch die Meetingdetails.',\n            components: [meetingVenueContinueRow()],\n            flags: MessageFlags.Ephemeral\n        });\n        return;\n    }\n    if (interaction.customId === 'meeting:create') {",
+  'Externer Meeting-Link'
 );
 
 replaceOnce(
