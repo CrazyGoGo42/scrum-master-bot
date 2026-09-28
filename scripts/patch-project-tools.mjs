@@ -14,8 +14,8 @@ function replaceOnce(search, replacement, label) {
 
 replaceOnce(
   "import { config } from './config.js';\n",
-  "import { config } from './config.js';\nimport { createScheduledMeeting, installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\n",
-  'Import'
+  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, meetingLocationRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\n",
+  'Imports'
 );
 
 replaceOnce(
@@ -32,7 +32,7 @@ replaceOnce(
 
 replaceOnce(
   'const chunks = splitDiscordText(botInfoText());',
-  'const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectToolsInfoText()}`);',
+  "const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/bot meeting` wird der Ort ausgewählt: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort kann direkt ein eigener Link angegeben werden. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
   'Info-Text erweitern'
 );
 
@@ -43,9 +43,21 @@ replaceOnce(
 );
 
 replaceOnce(
+  "sub.setName('meeting').setDescription('Erstellt ein neues Meeting im Meeting-Channel')",
+  "sub.setName('meeting')\n            .setDescription('Erstellt ein neues Meeting im Meeting-Channel')\n            .addStringOption((option) => option\n                .setName('ort')\n                .setDescription('Wo findet das Meeting statt?')\n                .setRequired(true)\n                .addChoices(\n                    { name: 'Discord Voice', value: 'discord' },\n                    { name: 'Alfaview', value: 'alfaview' },\n                    { name: 'Anderer Link (z. B. Teams)', value: 'external' }\n                ))\n            .addStringOption((option) => option\n                .setName('link')\n                .setDescription('Nur bei „Anderer Link“: Teams- oder anderer Meeting-Link'))",
+  'Meeting-Ort Option'
+);
+
+replaceOnce(
   '].map((command) => command.toJSON());',
   '].map((command) => command.toJSON()).concat(projectCommands);',
   'Projekt-Commands registrieren'
+);
+
+replaceOnce(
+  "await interaction.showModal(meetingModal());",
+  "const meetingVenueError = selectMeetingVenue(\n                interaction.user.id,\n                interaction.options.getString('ort', true),\n                interaction.options.getString('link')\n            );\n            if (meetingVenueError) {\n                await interaction.reply({ content: `❌ ${meetingVenueError}`, flags: MessageFlags.Ephemeral });\n                return;\n            }\n            await interaction.showModal(meetingModal());",
+  'Meeting-Ort merken'
 );
 
 replaceOnce(
@@ -55,14 +67,26 @@ replaceOnce(
 );
 
 replaceOnce(
+  'const timestamp = Math.floor(start.toSeconds());',
+  "const meetingVenue = consumeMeetingVenue(interaction.user.id);\n    if (!meetingVenue) {\n        await interaction.reply({\n            content: '❌ Die Meeting-Ort-Auswahl ist abgelaufen. Bitte starte **/bot meeting** erneut.',\n            flags: MessageFlags.Ephemeral\n        });\n        return;\n    }\n    const timestamp = Math.floor(start.toSeconds());",
+  'Meeting-Ort laden'
+);
+
+replaceOnce(
+  '`**Ort:** <#${config.meetingVoiceChannelId}>\\n` +',
+  '`**Ort:** ${meetingVenueText(meetingVenue)}\\n` +',
+  'Meeting-Ort anzeigen'
+);
+
+replaceOnce(
   'components: [meetingVoiceRow()],',
-  'components: [meetingVoiceRow(), meetingActionRow()],',
-  'Meeting-Aktionen'
+  'components: [meetingLocationRow(meetingVenue), meetingActionRow()],',
+  'Meeting-Link und Aktionen'
 );
 
 replaceOnce(
   "    await message.react('✅').catch(() => undefined);\n    await message.react('❌').catch(() => undefined);",
-  "    await message.react('✅').catch(() => undefined);\n    await message.react('❌').catch(() => undefined);\n    const scheduledEventUrl = await createScheduledMeeting(client, title, start, end, agenda);\n    if (scheduledEventUrl) {\n        await interaction.followUp({\n            content: `📅 Discord-Termin erstellt: ${scheduledEventUrl}`,\n            flags: MessageFlags.Ephemeral\n        });\n    }",
+  "    await message.react('✅').catch(() => undefined);\n    await message.react('❌').catch(() => undefined);\n    const scheduledEventUrl = await createScheduledMeeting(client, title, start, end, agenda, meetingVenue);\n    if (scheduledEventUrl) {\n        await interaction.followUp({\n            content: `📅 Discord-Termin erstellt: ${scheduledEventUrl}`,\n            flags: MessageFlags.Ephemeral\n        });\n    }",
   'Discord Scheduled Event'
 );
 
