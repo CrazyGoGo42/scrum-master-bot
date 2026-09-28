@@ -197,7 +197,6 @@ export async function createScheduledMeeting(
       privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
       entityType: GuildScheduledEventEntityType.External,
       entityMetadata: { location: venue.label.slice(0, 100) },
-      channel: null,
       reason: 'Externes Meeting über den Scrum-Master-Bot erstellt'
     });
     return event.url;
