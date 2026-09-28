@@ -14,13 +14,13 @@ function replaceOnce(search, replacement, label) {
 
 replaceOnce(
   "import { config } from './config.js';\n",
-  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, externalMeetingLinkModal, hasMeetingVenue, meetingLocationRow, meetingVenueChoiceRow, meetingVenueContinueRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\nimport { recordMeeting, weeklyProjectReportSection } from './weekly-project.js';\n",
+  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, externalMeetingLinkModal, hasMeetingVenue, meetingLocationRow, meetingVenueChoiceRow, meetingVenueContinueRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\nimport { recordMeeting, weeklyProjectReportSection } from './weekly-project.js';\nimport { installMeetingBackfill, meetingBackfillCommand } from './meeting-backfill.js';\n",
   'Imports'
 );
 
 replaceOnce(
   '\nfunction teamMember(id) {',
-  '\ninstallProjectTools(client);\n\nfunction teamMember(id) {',
+  '\ninstallProjectTools(client);\ninstallMeetingBackfill(client);\n\nfunction teamMember(id) {',
   'Project-Tools installieren'
 );
 
@@ -32,7 +32,7 @@ replaceOnce(
 
 replaceOnce(
   'const chunks = splitDiscordText(botInfoText());',
-  "const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/meeting` wählst du zuerst per Button den Ort: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort fragt der Bot anschließend nach dem Link. Danach öffnet sich das Formular für Titel, Datum, Uhrzeit, Dauer und Agenda. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt. Erstellte Meetings werden im Wochenbericht dokumentiert; Protokolle, Meeting-Aufgaben und Meeting-Entscheidungen erscheinen dort nur, wenn sie tatsächlich eingetragen wurden.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
+  "const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/meeting` wählst du zuerst per Button den Ort: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort fragt der Bot anschließend nach dem Link. Danach öffnet sich das Formular für Titel, Datum, Uhrzeit, Dauer und Agenda. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt. Bereits vergangene Meetings können mit `/meeting-nachtragen` dokumentiert werden und fließen dadurch ebenfalls in den passenden Wochenbericht ein. Erstellte Meetings werden im Wochenbericht dokumentiert; Protokolle, Meeting-Aufgaben und Meeting-Entscheidungen erscheinen dort nur, wenn sie tatsächlich eingetragen wurden.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
   'Info-Text erweitern'
 );
 
@@ -64,7 +64,7 @@ if (botCommandIndex >= 0) {
             .toJSON()
     );
 }
-commands.push(...projectCommands);`,
+commands.push(...projectCommands, meetingBackfillCommand);`,
   'Projekt-Commands registrieren und Bot-Präfix entfernen'
 );
 
@@ -163,7 +163,7 @@ replaceOnce(
 
 replaceOnce(
   '    if (interaction.isChatInputCommand())\n        void handleCommand(interaction).catch(console.error);',
-  "    if (interaction.isChatInputCommand() && !['task', 'blocker', 'entscheidung'].includes(interaction.commandName))\n        void handleCommand(interaction).catch(console.error);",
+  "    if (interaction.isChatInputCommand() && !['task', 'blocker', 'entscheidung', 'meeting-nachtragen'].includes(interaction.commandName))\n        void handleCommand(interaction).catch(console.error);",
   'Doppelte Command-Verarbeitung verhindern'
 );
 
