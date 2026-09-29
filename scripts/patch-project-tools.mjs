@@ -32,8 +32,14 @@ replaceOnce(
 
 replaceOnce(
   'const chunks = splitDiscordText(botInfoText());',
-  "const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/meeting` wählst du zuerst per Button den Ort: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort fragt der Bot anschließend nach dem Link. Danach öffnet sich das Formular für Titel, Datum, Uhrzeit, Dauer und Agenda. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt. Bereits vergangene Meetings können mit `/meeting-nachtragen` dokumentiert werden und fließen dadurch ebenfalls in den passenden Wochenbericht ein. Erstellte Meetings werden im Wochenbericht dokumentiert; Protokolle, Meeting-Aufgaben und Meeting-Entscheidungen erscheinen dort nur, wenn sie tatsächlich eingetragen wurden.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
-  'Info-Text erweitern'
+  "const staleInfoMessages = recent.filter(\n        (message) => message.author.id === client.user?.id && message.id !== existing?.id\n    );\n    for (const staleMessage of staleInfoMessages.values()) {\n        await staleMessage.delete().catch(() => undefined);\n    }\n    const projectInfo = projectToolsInfoText().replace(\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Wenn Discord die nötige Berechtigung erlaubt, wird außerdem ein geplanter Discord-Termin für den Voice-Channel angelegt.',\n        'Meetings bieten zusätzlich Protokoll-, Aufgaben- und Entscheidungsaktionen. Bei `/meeting` wählst du zuerst per Button den Ort: **Discord Voice**, **Alfaview** oder **Anderer Link** (z. B. Microsoft Teams). Für Alfaview wird der hinterlegte Standard-Link verwendet; bei einem anderen Ort fragt der Bot anschließend nach dem Link. Danach öffnet sich das Formular für Titel, Datum, Uhrzeit, Dauer und Agenda. Wenn Discord die nötige Berechtigung erlaubt, wird passend dazu ein geplanter Discord-Termin angelegt. Bereits vergangene Meetings können mit `/meeting-nachtragen` dokumentiert werden und fließen dadurch ebenfalls in den passenden Wochenbericht ein. Erstellte Meetings werden im Wochenbericht dokumentiert; Protokolle, Meeting-Aufgaben und Meeting-Entscheidungen erscheinen dort nur, wenn sie tatsächlich eingetragen wurden.'\n    );\n    const chunks = splitDiscordText(`${botInfoText()}\\n\\n${projectInfo}`);",
+  'Info-Text erweitern und alte Info-Fortsetzungen bereinigen'
+);
+
+replaceOnce(
+  "    await publishBotInfo().catch((error) => console.error('Bot-Info konnte nicht veröffentlicht werden.', error));\n",
+  '',
+  'Keine automatische Bot-Info beim Start'
 );
 
 replaceOnce(
