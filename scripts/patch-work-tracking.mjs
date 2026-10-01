@@ -14,7 +14,7 @@ function replaceOnce(search, replacement, label) {
 
 replaceOnce(
   "import { config } from './config.js';\n",
-  "import { config } from './config.js';\nimport { fridayCompletionStatus, installWorkTracking, startWorkSession, weeklyWorkTrackingSection, workTrackingCommands } from './work-tracking.js';\n",
+  "import { config } from './config.js';\nimport { fridayCompletionStatus, installWorkTracking, weeklyWorkTrackingSection, workTrackingCommands } from './work-tracking.js';\n",
   'Imports'
 );
 
@@ -37,12 +37,6 @@ replaceOnce(
 );
 
 replaceOnce(
-  'const thread = await createDailyFromDraft(draft);',
-  "const thread = await createDailyFromDraft(draft);\n            await startWorkSession(thread, interaction.user.id).catch((error) =>\n                console.error('[Arbeitszeit] Arbeitsstart konnte nicht gespeichert werden.', error)\n            );",
-  'Arbeitszeit nach Daily starten'
-);
-
-replaceOnce(
   "return report.join('\\n') + weeklyProjectReportSection();",
   "return report.join('\\n') + weeklyWorkTrackingSection(entries, date) + weeklyProjectReportSection();",
   'Arbeitszeiten in Wochenbericht'
@@ -60,4 +54,4 @@ source = source.replace(
 );
 
 await writeFile(file, source, 'utf8');
-console.log('[work-tracking patch] Arbeitszeiterfassung wurde in dist/index.js integriert.');
+console.log('[work-tracking patch] Button-Zeiterfassung wurde in dist/index.js integriert.');
