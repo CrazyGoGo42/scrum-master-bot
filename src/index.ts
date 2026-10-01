@@ -1335,8 +1335,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('scrum')
     .setDescription('Daily-Scrum Funktionen')
-    .addSubcommand((sub) => sub.setName('status').setDescription('Zeigt den heutigen Daily-Status'))
-    .addSubcommand((sub) => sub.setName('heute').setDescription('Zeigt den heutigen Daily-Status')),
+    .addSubcommand((sub) => sub.setName('status').setDescription('Zeigt den heutigen Daily-Status')),
   new SlashCommandBuilder()
     .setName('wochenbericht')
     .setDescription('Wochenbericht verwalten')

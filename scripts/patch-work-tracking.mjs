@@ -44,7 +44,7 @@ replaceOnce(
 
 replaceOnce(
   "!['task', 'blocker', 'entscheidung', 'meeting-nachtragen', 'daily-bearbeiten'].includes(interaction.commandName)",
-  "!['task', 'blocker', 'entscheidung', 'meeting-nachtragen', 'daily-bearbeiten', 'feierabend', 'arbeitszeit'].includes(interaction.commandName)",
+  "!['task', 'blocker', 'entscheidung', 'meeting-nachtragen', 'daily-bearbeiten', 'arbeitszeit'].includes(interaction.commandName)",
   'Doppelte Command-Verarbeitung verhindern'
 );
 
@@ -76,11 +76,6 @@ replaceWorkTrackingOnce(
   "`- **${label}:** Daily um ${daily.createdAt.toFormat('HH:mm')} Uhr · Arbeitszeit nicht erfasst (Altbestand vor Arbeitszeiterfassung)`",
   "DateTime.fromISO(day, { zone: config.timezone }).weekday === 5\n            ? `- **${label}:** Nicht übermittelt`\n            : `- **${label}:** Daily um ${daily.createdAt.toFormat('HH:mm')} Uhr · Arbeitszeit nicht erfasst (Altbestand vor Arbeitszeiterfassung)`",
   'Fehlende Freitags-Arbeitszeit als Nicht übermittelt'
-);
-
-source = source.replace(
-  '`/daily` · Daily/Abmeldung  •  `/daily-bearbeiten` · heutiges Daily korrigieren',
-  '`/daily` · Daily/Abmeldung  •  `/daily-bearbeiten` · heutiges Daily korrigieren  •  `/feierabend` · Arbeitstag abschließen  •  `/arbeitszeit` · Zeiten anzeigen/nachtragen'
 );
 
 await writeFile(workTrackingFile, workTrackingSource, 'utf8');

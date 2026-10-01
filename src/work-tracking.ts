@@ -576,9 +576,6 @@ async function remindMissingEnds(client: Client): Promise<void> {
 
 export const workTrackingCommands = [
   new SlashCommandBuilder()
-    .setName('feierabend')
-    .setDescription('Beendet deine aktuell laufende Arbeitszeit'),
-  new SlashCommandBuilder()
     .setName('arbeitszeit')
     .setDescription('Arbeitszeiten anzeigen oder nachtragen')
     .addSubcommand((sub) => sub.setName('status').setDescription('Zeigt deine letzten Arbeitszeiten'))
@@ -705,11 +702,6 @@ export function installWorkTracking(client: Client): void {
 
   client.on(Events.InteractionCreate, (interaction) => {
     void (async () => {
-      if (interaction.isChatInputCommand() && interaction.commandName === 'feierabend') {
-        await endOpenSession(interaction);
-        return;
-      }
-
       if (interaction.isChatInputCommand() && interaction.commandName === 'arbeitszeit') {
         if (!isTeamMember(interaction.user.id)) {
           await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });

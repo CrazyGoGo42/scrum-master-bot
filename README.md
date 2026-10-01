@@ -191,16 +191,20 @@ Buttons und Modals prüfen die User-ID ebenfalls erneut.
 
 ## Slash Commands
 
+Die vollständige, sortierte Übersicht für das Team steht auf der Info-Seite (`src/bot-info.ts`, veröffentlicht mit `/info`).
+
 - `/daily` – Daily oder Abmeldung für den Arbeitstag starten
+- `/daily-bearbeiten` – heutiges Daily korrigieren
+- `/arbeitszeit status` / `/arbeitszeit nachtragen` – Arbeitszeiten ansehen oder nachtragen (Start/Pause/Ende per Buttons im Zeiterfassungs-Channel)
+- `/blocker add` / `offen` / `lösen` – Blocker verwalten
+- `/entscheidung add` / `liste` – Projektentscheidungen dokumentieren
+- `/meeting` – neues Meeting erstellen, nur im Meeting-Erstellen-Channel
+- `/meeting-nachtragen` – vergangenes Meeting dokumentieren
+- `/wochenbericht vorschau` / `erstellen` / `freigeben` / `export` – Wochenbericht
+- `/task add` / `board` / `meine` / `move` / `fortschritt` / `löschen` – freiwilliges Aufgabenboard
 - `/scrum status` – heutigen Daily-/Abmeldestatus anzeigen
-- `/scrum heute` – heutigen Status anzeigen
-- `/bot struktur` – private Daily-Vorlage anzeigen
-- `/bot status` – Bot- und Channel-Konfiguration prüfen
-- `/bot info` – öffentliche Bot-Dokumentation aktualisieren
-- `/bot meeting` – neues Meeting erstellen, nur im Meeting-Erstellen-Channel
-- `/wochenbericht vorschau` – Wochenbericht privat ansehen
-- `/wochenbericht erstellen` – Wochenbericht sofort neu erstellen
-- `/wochenbericht freigeben` – neuesten Wochenbericht freigeben
+- `/status` – Bot- und Channel-Konfiguration prüfen
+- `/info` – Info-Seite im Info-Channel veröffentlichen
 - `/test` – geplante Bot-Aktionen manuell testen, nur mit `Server verwalten`
 
 ## Benötigte Umgebungsvariablen
