@@ -21,6 +21,7 @@ export const config = {
   infoChannelId: required('SCRUM_INFO_CHANNEL_ID'),
   meetingCreateChannelId: required('MEETING_CREATE_CHANNEL_ID'),
   meetingVoiceChannelId: required('MEETING_VOICE_CHANNEL_ID'),
+  timeTrackingChannelId: process.env.TIME_TRACKING_CHANNEL_ID || '1555300952527872000',
   timezone: process.env.TIMEZONE || 'Europe/Berlin',
   trackingStartDate: process.env.TRACKING_START_DATE || '2026-09-28',
   pushReminderAfterHours: numberValue('PUSH_REMINDER_AFTER_HOURS', 6),
