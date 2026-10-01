@@ -604,6 +604,12 @@ export const projectCommands = [
         .addStringOption((option) => option.setName('begründung').setDescription('Optional: Warum?').setMaxLength(1000))
     )
     .addSubcommand((sub) => sub.setName('liste').setDescription('Zeigt die letzten Entscheidungen'))
+    .addSubcommand((sub) =>
+      sub
+        .setName('löschen')
+        .setDescription('Löscht eine Entscheidung aus dem Entscheidungslog')
+        .addStringOption((option) => option.setName('id').setDescription('z. B. D-001 (siehe /entscheidung liste)').setRequired(true))
+    )
 ].map((command) => command.toJSON());
 
 async function requireTeam(interaction: ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction): Promise<boolean> {
@@ -744,6 +750,20 @@ async function handleDecisionCommand(interaction: ChatInputCommandInteraction): 
       'manual'
     );
     await interaction.reply({ content: `📌 **${entry.id} · ${entry.title}** wurde im Entscheidungslog gespeichert.`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // Entscheidungen gehören dem Team: jedes Teammitglied darf löschen, nicht nur die Person, die sie eingetragen hat.
+  if (sub === 'löschen') {
+    const id = interaction.options.getString('id', true).trim().toUpperCase();
+    const entry = state.decisions.find((decision) => decision.id.toUpperCase() === id);
+    if (!entry) {
+      await interaction.reply({ content: `❌ Entscheidung **${id}** wurde nicht gefunden. Die IDs zeigt \`/entscheidung liste\`.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    state.decisions = state.decisions.filter((decision) => decision !== entry);
+    await saveState(state);
+    await interaction.reply({ content: `🗑️ **${entry.id} · ${entry.title}** wurde gelöscht.`, flags: MessageFlags.Ephemeral });
     return;
   }
 
