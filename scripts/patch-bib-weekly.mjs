@@ -1,7 +1,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
 
 const file = new URL('../dist/index.js', import.meta.url);
+const weeklyBibFile = new URL('../dist/weekly-bib.js', import.meta.url);
 let source = await readFile(file, 'utf8');
+let weeklyBibSource = await readFile(weeklyBibFile, 'utf8');
 
 function replaceOnce(search, replacement, label) {
   const first = source.indexOf(search);
@@ -12,9 +14,17 @@ function replaceOnce(search, replacement, label) {
   source = source.slice(0, first) + replacement + source.slice(first + search.length);
 }
 
+function replaceWeeklyBibRegex(regex, replacement, label) {
+  const matches = [...weeklyBibSource.matchAll(new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`))];
+  if (matches.length !== 1) {
+    throw new Error(`[bib-weekly patch] Erwartet genau einen Marker in weekly-bib.js für ${label}, gefunden: ${matches.length}`);
+  }
+  weeklyBibSource = weeklyBibSource.replace(regex, replacement);
+}
+
 function patchCreateWeeklyReport() {
   const startMarker = 'async function createWeeklyReport() {';
-  const endMarker = '\nasync function weeklyReportJob() {';
+  const endMarker = '\nasync function weeklyReportJob(';
   const start = source.indexOf(startMarker);
   if (start === -1) throw new Error('[bib-weekly patch] Marker fehlt: createWeeklyReport Start');
   const end = source.indexOf(endMarker, start);
@@ -64,5 +74,28 @@ source = source
   .replaceAll('Mit `/wochenbericht export` lässt sich derselbe Bericht als **Markdown-Datei** herunterladen.', 'Mit `/wochenbericht export` lässt sich derselbe Bericht als **Markdown- und PDF-Datei** herunterladen.')
   .replaceAll('Markdown-Datei herunterladen', 'Markdown- und PDF-Datei herunterladen');
 
+replaceWeeklyBibRegex(
+  /function workText\(session, hasDaily\)\s*\{/,
+  'function workText(session, hasDaily, day) {',
+  'workText Signatur'
+);
+
+replaceWeeklyBibRegex(
+  /if \(!session\)\s*return hasDaily \? 'Nicht erfasst \(Altbestand vor Arbeitszeiterfassung\)' : 'Keine Arbeitszeit erfasst';/,
+  "if (!session) {\n        if (day?.weekday === 5) return 'Nicht übermittelt';\n        return hasDaily ? 'Nicht erfasst (Altbestand vor Arbeitszeiterfassung)' : 'Keine Arbeitszeit erfasst';\n    }",
+  'fehlende Freitags-Arbeitszeit'
+);
+
+replaceWeeklyBibRegex(
+  /if \(!end\?\.isValid\)\s*return `\$\{start\.toFormat\('HH:mm'\)\} Uhr - noch nicht abgeschlossen`;/,
+  "if (!end?.isValid) {\n        if (day?.weekday === 5) return 'Nicht übermittelt';\n        return `${start.toFormat('HH:mm')} Uhr - noch nicht abgeschlossen`;\n    }",
+  'offene Freitags-Arbeitszeit'
+);
+
+weeklyBibSource = weeklyBibSource
+  .replaceAll('workText(session, false)', 'workText(session, false, day)')
+  .replaceAll('workText(session, true)', 'workText(session, true, day)');
+
+await writeFile(weeklyBibFile, weeklyBibSource, 'utf8');
 await writeFile(file, source, 'utf8');
-console.log('[bib-weekly patch] bib-Wochenbericht mit Markdown und PDF wurde in dist/index.js integriert.');
+console.log('[bib-weekly patch] bib-Wochenbericht mit Markdown/PDF und Freitag-Nicht-übermittelt wurde in dist integriert.');
