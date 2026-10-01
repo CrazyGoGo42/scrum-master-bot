@@ -138,6 +138,14 @@ Der Bericht enthält:
 
 Ein später am Freitag eingereichtes Daily kann über `/wochenbericht erstellen` in einem neu erzeugten Bericht berücksichtigt werden.
 
+Zusätzlich hängt der Bot eine **PDF für den Projektbetreuer** an (Layout nach bib-Dokumentationsrichtlinie: DIN A4, Logo oben rechts, Bundsteg links, Seitenzahlen):
+
+1. Anwesenheit und Arbeitszeiten – Tabelle Person × Wochentag mit Beginn/Ende, Netto-Stunden, Abwesenheiten und Wochensumme
+2. Tätigkeiten – je Person und Tag: erledigt, geplant, Blocker
+3. Meetings – Thema, Ort, Teilnehmer, Agenda, Protokoll
+4. Entscheidungen
+5. Probleme und Blocker – mit Status (offen / gelöst)
+
 ## Meetings
 
 Meetings werden ausschließlich im konfigurierten `meetings-erstellen`-Channel mit `/bot meeting` erstellt.

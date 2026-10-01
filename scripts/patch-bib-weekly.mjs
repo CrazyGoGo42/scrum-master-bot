@@ -28,7 +28,7 @@ function patchCreateWeeklyReport() {
   }
   block = block.replace(
     chunksRegex,
-    "const report = buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n    const chunks = splitDiscordText(report);\n    const attachments = await weeklyReportAttachments(report);"
+    "const report = buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n    const chunks = splitDiscordText(report);\n    const attachments = await weeklyReportAttachments(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);"
   );
 
   const messageRegex = /message:\s*\{\s*content:\s*chunks\[0\]\s*\},/;
@@ -55,8 +55,8 @@ replaceOnce(
 patchCreateWeeklyReport();
 
 replaceOnce(
-  "            await interaction.editReply({\n                content: '📄 Wochenbericht als Markdown-Datei:',\n                files: [weeklyMarkdownAttachment(report)]\n            });",
-  "            const attachments = await weeklyReportAttachments(report);\n            await interaction.editReply({\n                content: '📄 Wochenbericht als **Markdown und PDF**:',\n                files: attachments\n            });",
+  "            const report = buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n            await interaction.editReply({\n                content: '📄 Wochenbericht als Markdown-Datei:',\n                files: [weeklyMarkdownAttachment(report)]\n            });",
+  "            const attachments = await weeklyReportAttachments(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n            await interaction.editReply({\n                content: '📄 Wochenbericht als **Markdown und PDF**:',\n                files: attachments\n            });",
   'Export als Markdown und PDF'
 );
 
