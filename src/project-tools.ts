@@ -137,7 +137,8 @@ async function loadState(): Promise<ProjectState> {
 }
 
 async function saveState(state: ProjectState): Promise<void> {
-  saveQueue = saveQueue.then(async () => {
+  // Ein fehlgeschlagener Schreibvorgang darf spätere Speicherungen nicht blockieren.
+  saveQueue = saveQueue.catch(() => undefined).then(async () => {
     await fs.mkdir(path.dirname(statePath), { recursive: true });
     const temporary = `${statePath}.tmp`;
     await fs.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8');

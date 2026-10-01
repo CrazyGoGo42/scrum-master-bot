@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DateTime } from 'luxon';
+import cron from 'node-cron';
 import { config } from './config.js';
 
 type SessionProvenance = 'daily' | 'clock' | 'manual-exact' | 'manual-estimated';
@@ -110,7 +111,8 @@ async function loadState(): Promise<WorkState> {
 }
 
 async function saveState(state: WorkState): Promise<void> {
-  saveQueue = saveQueue.then(async () => {
+  // Ein fehlgeschlagener Schreibvorgang darf spätere Speicherungen nicht blockieren.
+  saveQueue = saveQueue.catch(() => undefined).then(async () => {
     await fs.mkdir(path.dirname(statePath), { recursive: true });
     const temporary = `${statePath}.tmp`;
     await fs.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
@@ -694,6 +696,11 @@ export function installWorkTracking(client: Client): void {
   client.once(Events.ClientReady, () => {
     void ensureTimePanel(client).catch((error) => console.error('[Arbeitszeit] Zeiterfassungs-Panel konnte nicht veröffentlicht werden.', error));
     void remindMissingEnds(client).catch((error) => console.error('[Arbeitszeit] Fehlende Endzeiten konnten nicht geprüft werden.', error));
+    cron.schedule(
+      config.cron.workEndReminder,
+      () => void remindMissingEnds(client).catch((error) => console.error('[Arbeitszeit] Fehlende Endzeiten konnten nicht geprüft werden.', error)),
+      { timezone: config.timezone }
+    );
   });
 
   client.on(Events.InteractionCreate, (interaction) => {

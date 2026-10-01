@@ -26,7 +26,6 @@ type WorkSession = {
   startAt: string;
   endAt?: string;
   pauseMinutes: number;
-  provenance?: 'daily' | 'clock' | 'manual-exact' | 'manual-estimated';
 };
 
 type StoredMeeting = {
@@ -217,13 +216,8 @@ function workText(session: WorkSession | undefined, hasDaily: boolean, day: Date
     return `${start.toFormat('HH:mm')} Uhr - noch nicht abgeschlossen`;
   }
 
-  const qualifier = session.provenance === 'manual-estimated'
-    ? ' · nachgetragen, geschätzt'
-    : session.provenance === 'manual-exact'
-      ? ' · nachgetragen'
-      : '';
   const nextDay = end.toISODate() !== start.toISODate() ? ' (+1 Tag)' : '';
-  return `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}${nextDay} Uhr · Pause ${session.pauseMinutes ?? 0} min · ${durationText(netMinutes)}${qualifier}`;
+  return `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}${nextDay} Uhr · Pause ${session.pauseMinutes ?? 0} min · ${durationText(netMinutes)}`;
 }
 
 function weekRange(date: DateTime): { start: DateTime; end: DateTime } {
@@ -743,13 +737,10 @@ function workCell(record: DayRecord): TableCell {
 
   const runs: Run[] = [
     { text: `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}` },
-    { text: hoursText(netMinutes), style: 'bold' }
+    { text: hoursText(netMinutes), style: 'bold' },
+    { text: `Pause ${session.pauseMinutes ?? 0} min`, size: 7.2, color: MUTED }
   ];
-  const notes = [
-    end.toISODate() !== start.toISODate() ? 'bis Folgetag' : '',
-    session.provenance === 'manual-estimated' ? 'nachgetragen, geschätzt' : session.provenance === 'manual-exact' ? 'nachgetragen' : ''
-  ].filter(Boolean);
-  if (notes.length > 0) runs.push({ text: notes.join(', '), style: 'italic', size: 7.2, color: MUTED });
+  if (end.toISODate() !== start.toISODate()) runs.push({ text: 'bis Folgetag', style: 'italic', size: 7.2, color: MUTED });
   return { runs };
 }
 
@@ -816,7 +807,7 @@ function drawAttendance(pdf: Pdf, week: WeekData): void {
   });
   drawTable(pdf, columns, rows);
   doc.y += 5;
-  drawNote(pdf, 'Arbeitszeiten von Beginn bis Ende, Summen netto nach Abzug der Pausen.');
+  drawNote(pdf, 'Je Tag: Beginn–Ende, Arbeitszeit netto (nach Abzug der Pause), Pause. Summe = Netto-Arbeitszeit der Woche.');
 
   doc.y += 6;
   const missing = missingDocumentation(week);
