@@ -372,18 +372,62 @@ export async function offerDailyTasks(thread: ThreadChannel, ownerId: string, to
   });
 }
 
-export async function trackDailyBlockers(ownerId: string, blockerText: string, dailyThreadId: string): Promise<void> {
-  const lines = textLines(blockerText);
-  if (lines.length === 0) return;
+const NO_BLOCKER = new Set(['keine', 'keine blocker', 'nichts', 'aktuell keine', '-']);
 
-  const none = new Set(['keine', 'keine blocker', 'nichts', 'aktuell keine', '-']);
+function dailyBlockerLines(blockerText: string): string[] {
+  return textLines(blockerText).filter((text) => !NO_BLOCKER.has(normalize(text)));
+}
+
+type BlockerLike = { ownerId: string; text: string; createdAt: string; dailyThreadId?: string };
+
+/**
+ * Findet den gespeicherten Blocker zu einer Blocker-Zeile aus einem Daily:
+ * 1. aus genau diesem Daily-Thread,
+ * 2. sonst der zuletzt bis kurz nach dem Daily angelegte mit gleichem Text (bereits offen gewesener Blocker),
+ * 3. sonst ein später mit gleichem Text angelegter (nachträglich erfasst).
+ */
+export function matchingDailyBlocker<T extends BlockerLike>(
+  blockers: T[],
+  ownerId: string,
+  text: string,
+  dailyThreadId: string | undefined,
+  reportedAt: DateTime
+): T | undefined {
+  const same = blockers
+    .filter((blocker) => blocker.ownerId === ownerId && normalize(blocker.text) === normalize(text))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const fromThread = dailyThreadId ? same.filter((blocker) => blocker.dailyThreadId === dailyThreadId) : [];
+  if (fromThread.length > 0) return fromThread.at(-1);
+  const limit = reportedAt.plus({ hours: 1 });
+  const before = same.filter((blocker) => DateTime.fromISO(blocker.createdAt, { zone: config.timezone }) <= limit);
+  return before.at(-1) ?? same[0];
+}
+
+export async function trackDailyBlockers(ownerId: string, blockerText: string, dailyThreadId: string): Promise<void> {
+  const lines = dailyBlockerLines(blockerText);
   const state = await loadState();
   let changed = false;
 
+  // Nach /daily-bearbeiten: offene Blocker dieses Dailys, die nicht mehr im Text stehen, wurden ersetzt.
+  const current = new Set(lines.map(normalize));
+  const replaced = state.blockers.filter(
+    (blocker) =>
+      blocker.source === 'daily' &&
+      blocker.dailyThreadId === dailyThreadId &&
+      blocker.status === 'open' &&
+      !current.has(normalize(blocker.text))
+  );
+  if (replaced.length > 0) {
+    state.blockers = state.blockers.filter((blocker) => !replaced.includes(blocker));
+    changed = true;
+  }
+
   for (const text of lines) {
-    if (none.has(normalize(text))) continue;
     const exists = state.blockers.some(
-      (blocker) => blocker.ownerId === ownerId && blocker.status === 'open' && normalize(blocker.text) === normalize(text)
+      (blocker) =>
+        blocker.ownerId === ownerId &&
+        normalize(blocker.text) === normalize(text) &&
+        (blocker.status === 'open' || blocker.dailyThreadId === dailyThreadId)
     );
     if (exists) continue;
 
@@ -397,6 +441,32 @@ export async function trackDailyBlockers(ownerId: string, blockerText: string, d
       dailyThreadId
     });
     changed = true;
+  }
+
+  if (changed) await saveState(state);
+}
+
+/** Übernimmt Blocker aus Dailies, die noch nicht in der Blocker-Liste stehen (z. B. Dailies ohne /daily). */
+export async function importDailyBlockers(
+  dailies: { ownerId: string; createdAt: DateTime; threadId?: string; blockerText: string }[]
+): Promise<void> {
+  const state = await loadState();
+  let changed = false;
+
+  for (const daily of dailies) {
+    for (const text of dailyBlockerLines(daily.blockerText)) {
+      if (matchingDailyBlocker(state.blockers, daily.ownerId, text, daily.threadId, daily.createdAt)) continue;
+      state.blockers.push({
+        id: blockerId(state),
+        text,
+        ownerId: daily.ownerId,
+        status: 'open',
+        source: 'daily',
+        createdAt: daily.createdAt.toISO() ?? nowIso(),
+        dailyThreadId: daily.threadId
+      });
+      changed = true;
+    }
   }
 
   if (changed) await saveState(state);

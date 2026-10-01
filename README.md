@@ -146,7 +146,7 @@ Zusätzlich hängt der Bot eine **PDF für den Projektbetreuer** an (Layout nach
 2. Tätigkeiten – je Person und Tag: erledigt, geplant, Blocker
 3. Meetings – Thema, Ort, Teilnehmer, Agenda, Protokoll
 4. Entscheidungen
-5. Probleme und Blocker – mit Status (offen / gelöst)
+5. Probleme und Blocker – mit Status (offen / behoben am …); behoben wird ein Blocker mit `/blocker lösen`
 
 ## Meetings
 

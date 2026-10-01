@@ -4,12 +4,14 @@ import path from 'node:path';
 import PDFDocument from 'pdfkit';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
+import { importDailyBlockers, matchingDailyBlocker } from './project-tools.js';
 
 type DailyLike = {
   ownerId: string;
   ownerName: string;
   createdAt: DateTime;
   content: string;
+  thread?: { id: string };
 };
 
 type AbsenceLike = {
@@ -430,7 +432,7 @@ function renderMarkdown(week: WeekData): string {
       const key = `${blocker.ownerId}:${blocker.text.toLocaleLowerCase('de-DE')}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push(`- **${memberName(blocker.ownerId)} · ${blocker.status === 'resolved' ? 'gelöst' : 'offen'}:** ${blocker.text}`);
+      out.push(`- **${memberName(blocker.ownerId)} · ${blocker.status === 'resolved' ? 'behoben' : 'offen'}:** ${blocker.text}`);
     }
   }
 
@@ -984,18 +986,14 @@ function drawBlockers(pdf: Pdf, week: WeekData): void {
     rows.push(row);
   };
 
-  // Daily-Blocker werden beim Absenden als Projekt-Blocker gespeichert; der Status kommt von dort.
-  const tracked = (ownerId: string, text: string, reportedAt: DateTime): ProjectBlocker | undefined =>
-    week.allProjectBlockers
-      .filter((blocker) => blocker.ownerId === ownerId && normalizedText(blocker.text) === normalizedText(text))
-      .filter((blocker) => DateTime.fromISO(blocker.createdAt, { zone: config.timezone }) <= reportedAt.plus({ hours: 1 }))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 
   for (const entry of week.entries) {
     const blockers = section(entry.content, ['Blocker']);
     if (!isRealBlocker(blockers)) continue;
     for (const text of blockers) {
-      add({ date: entry.createdAt, ownerId: entry.ownerId, text, blocker: tracked(entry.ownerId, text, entry.createdAt) });
+      // Der Status kommt aus der Blocker-Liste (/blocker lösen).
+      const blocker = matchingDailyBlocker(week.allProjectBlockers, entry.ownerId, text, entry.thread?.id, entry.createdAt);
+      add({ date: entry.createdAt, ownerId: entry.ownerId, text, blocker });
     }
   }
   for (const blocker of week.projectBlockers) {
@@ -1007,14 +1005,14 @@ function drawBlockers(pdf: Pdf, week: WeekData): void {
     return;
   }
 
+  // Ein gemeldeter Blocker gilt als offen, bis er mit /blocker lösen behoben wurde.
   const statusRun = (blocker?: ProjectBlocker): Run => {
-    if (!blocker) return { text: '–', color: MUTED };
-    if (blocker.status === 'open') return { text: 'offen', style: 'bold', color: ALERT };
+    if (blocker?.status !== 'resolved') return { text: 'offen', style: 'bold', color: ALERT };
     const resolved = blocker.resolvedAt ? DateTime.fromISO(blocker.resolvedAt, { zone: config.timezone }) : undefined;
-    return { text: resolved?.isValid ? `gelöst ${resolved.toFormat('dd.MM.')}` : 'gelöst', color: MUTED };
+    return { text: resolved?.isValid ? `behoben am ${resolved.toFormat('dd.MM.')}` : 'behoben', color: MUTED };
   };
 
-  const statusWidth = 70;
+  const statusWidth = 88;
   drawTable(
     pdf,
     [
@@ -1126,6 +1124,18 @@ export async function weeklyReportAttachments(
   unavailableMemberIds = new Set<string>(),
   date = DateTime.now().setZone(config.timezone)
 ): Promise<AttachmentBuilder[]> {
+  const { start, end } = weekRange(date);
+  await importDailyBlockers(
+    entries
+      .filter((entry) => entry.createdAt >= start && entry.createdAt <= end)
+      .map((entry) => ({
+        ownerId: entry.ownerId,
+        createdAt: entry.createdAt,
+        threadId: entry.thread?.id,
+        blockerText: isRealBlocker(section(entry.content, ['Blocker'])) ? section(entry.content, ['Blocker']).join('\n') : ''
+      }))
+  ).catch((error) => console.error('[Weekly PDF] Blocker aus Dailies konnten nicht übernommen werden.', error));
+
   const week = collectWeek(entries, absences, unavailableMemberIds, date);
   const stem = `Wochenbericht_KW${String(week.start.weekNumber).padStart(2, '0')}_${week.start.weekYear}`;
   const pdf = await renderPdf(week);

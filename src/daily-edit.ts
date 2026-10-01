@@ -16,6 +16,7 @@ import {
 } from 'discord.js';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
+import { trackDailyBlockers } from './project-tools.js';
 
 const PUSH_DONE_MARKER = '**Push-Status:** ✅ Erledigt';
 let installed = false;
@@ -209,6 +210,9 @@ async function handleModal(client: Client, interaction: ModalSubmitInteraction):
     content,
     components: showPushButton ? [pushRow(interaction.user.id)] : []
   });
+  await trackDailyBlockers(interaction.user.id, blocker, channel.id).catch((error) =>
+    console.error('[Daily bearbeiten] Blocker konnten nicht aktualisiert werden.', error)
+  );
 
   await interaction.reply({
     content:
