@@ -87,19 +87,34 @@ type ProjectState = {
 type MeetingHistory = { meetings?: StoredMeeting[] };
 type WorkState = { sessions?: WorkSession[] };
 
+type WeekData = {
+  date: DateTime;
+  start: DateTime;
+  end: DateTime;
+  unavailableMemberIds: Set<string>;
+  entries: DailyLike[];
+  absences: AbsenceLike[];
+  sessions: WorkSession[];
+  meetings: StoredMeeting[];
+  notes: MeetingNote[];
+  tasks: ProjectTask[];
+  decisions: ProjectDecision[];
+  projectBlockers: ProjectBlocker[];
+  allProjectBlockers: ProjectBlocker[];
+};
+
+type DayRecord = {
+  day: DateTime;
+  daily?: DailyLike;
+  absence?: AbsenceLike;
+  session?: WorkSession;
+  isFuture: boolean;
+};
+
 const projectStatePath = process.env.PROJECT_STATE_FILE || path.join(process.cwd(), 'data', 'project-state.json');
 const meetingHistoryPath = process.env.MEETING_HISTORY_FILE || path.join(process.cwd(), 'data', 'meeting-history.json');
 const workStatePath = process.env.WORK_TRACKING_FILE || path.join(process.cwd(), 'data', 'work-sessions.json');
 const logoPath = process.env.WEEKLY_REPORT_LOGO_PATH || path.join(process.cwd(), 'assets', 'BIB_Logo_4c1.jpg');
-
-const PAGE_LEFT = 54;
-const PAGE_RIGHT = 54;
-const PAGE_TOP = 60;
-const PAGE_BOTTOM = 62;
-const TEXT_DARK = '#171717';
-const TEXT_MUTED = '#666666';
-const RULE = '#D5D5D5';
-const PANEL = '#F2F2F2';
 
 function readJson<T>(filePath: string, fallback: T): T {
   if (!existsSync(filePath)) return fallback;
@@ -152,6 +167,10 @@ function normalizedBranch(value: string): string {
     .toLocaleLowerCase('de-DE');
 }
 
+function normalizedText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('de-DE');
+}
+
 function inRange(value: string | undefined, start: DateTime, end: DateTime): boolean {
   if (!value) return false;
   const date = DateTime.fromISO(value, { zone: config.timezone });
@@ -178,28 +197,33 @@ function durationText(minutes: number): string {
   return `${hours} h ${rest} min`;
 }
 
+function sessionTimes(session: WorkSession): { start: DateTime; end?: DateTime; netMinutes: number } {
+  const start = DateTime.fromISO(session.startAt, { zone: config.timezone });
+  const end = session.endAt ? DateTime.fromISO(session.endAt, { zone: config.timezone }) : undefined;
+  if (!end?.isValid) return { start, netMinutes: 0 };
+  const gross = Math.round(end.diff(start, 'minutes').minutes);
+  return { start, end, netMinutes: Math.max(0, gross - Math.max(0, session.pauseMinutes ?? 0)) };
+}
+
 function workText(session: WorkSession | undefined, hasDaily: boolean, day: DateTime): string {
   if (!session) {
     if (day.weekday === 5) return 'Nicht übermittelt';
     return hasDaily ? 'Nicht erfasst (Altbestand vor Arbeitszeiterfassung)' : 'Keine Arbeitszeit erfasst';
   }
 
-  const start = DateTime.fromISO(session.startAt, { zone: config.timezone });
-  const end = session.endAt ? DateTime.fromISO(session.endAt, { zone: config.timezone }) : undefined;
-  if (!end?.isValid) {
+  const { start, end, netMinutes } = sessionTimes(session);
+  if (!end) {
     if (day.weekday === 5) return 'Nicht übermittelt';
     return `${start.toFormat('HH:mm')} Uhr - noch nicht abgeschlossen`;
   }
 
-  const gross = Math.round(end.diff(start, 'minutes').minutes);
-  const net = Math.max(0, gross - Math.max(0, session.pauseMinutes ?? 0));
   const qualifier = session.provenance === 'manual-estimated'
     ? ' · nachgetragen, geschätzt'
     : session.provenance === 'manual-exact'
       ? ' · nachgetragen'
       : '';
   const nextDay = end.toISODate() !== start.toISODate() ? ' (+1 Tag)' : '';
-  return `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}${nextDay} Uhr · Pause ${session.pauseMinutes ?? 0} min · ${durationText(net)}${qualifier}`;
+  return `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}${nextDay} Uhr · Pause ${session.pauseMinutes ?? 0} min · ${durationText(netMinutes)}${qualifier}`;
 }
 
 function weekRange(date: DateTime): { start: DateTime; end: DateTime } {
@@ -216,29 +240,78 @@ function markdownBullets(items: string[], fallback?: string): string[] {
   return items.map((item) => `- ${item}`);
 }
 
-export function buildBibWeeklyReport(
+function collectWeek(
   entries: DailyLike[],
   absences: AbsenceLike[],
-  unavailableMemberIds = new Set<string>(),
-  date = DateTime.now().setZone(config.timezone)
-): string {
+  unavailableMemberIds: Set<string>,
+  date: DateTime
+): WeekData {
   const { start, end } = weekRange(date);
   const work = readJson<WorkState>(workStatePath, {});
   const history = readJson<MeetingHistory>(meetingHistoryPath, {});
   const project = readJson<ProjectState>(projectStatePath, {});
 
-  const weekEntries = entries.filter((entry) => entry.createdAt >= start && entry.createdAt <= end);
-  const weekAbsences = absences.filter((entry) => entry.createdAt >= start && entry.createdAt <= end);
-  const weekSessions = (work.sessions ?? []).filter((session) => inRange(`${session.date}T12:00:00`, start, end));
-  const weekMeetings = (history.meetings ?? [])
-    .filter((meeting) => inRange(meeting.startAt, start, end))
-    .sort((a, b) => a.startAt.localeCompare(b.startAt));
-  const weekNotes = (project.meetingNotes ?? []).filter((note) => inRange(note.createdAt, start, end));
-  const weekTasks = (project.tasks ?? []).filter((task) => task.source === 'meeting' && inRange(task.createdAt, start, end));
-  const weekDecisions = (project.decisions ?? []).filter((decision) => inRange(decision.createdAt, start, end));
-  const weekProjectBlockers = (project.blockers ?? []).filter(
-    (blocker) => inRange(blocker.createdAt, start, end) || inRange(blocker.resolvedAt, start, end)
+  const weekEntries = entries
+    .filter((entry) => entry.createdAt >= start && entry.createdAt <= end)
+    .sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
+  // Ein später eingereichtes Daily hebt die Abmeldung desselben Tages auf.
+  const weekAbsences = absences.filter(
+    (entry) =>
+      entry.createdAt >= start &&
+      entry.createdAt <= end &&
+      !weekEntries.some((daily) => daily.ownerId === entry.ownerId && daily.createdAt.toISODate() === entry.createdAt.toISODate())
   );
+
+  return {
+    date,
+    start,
+    end,
+    unavailableMemberIds,
+    entries: weekEntries,
+    absences: weekAbsences,
+    sessions: (work.sessions ?? []).filter((session) => inRange(`${session.date}T12:00:00`, start, end)),
+    meetings: (history.meetings ?? [])
+      .filter((meeting) => inRange(meeting.startAt, start, end))
+      .sort((a, b) => a.startAt.localeCompare(b.startAt)),
+    notes: (project.meetingNotes ?? []).filter((note) => inRange(note.createdAt, start, end)),
+    tasks: (project.tasks ?? []).filter((task) => task.source === 'meeting' && inRange(task.createdAt, start, end)),
+    decisions: (project.decisions ?? []).filter((decision) => inRange(decision.createdAt, start, end)),
+    projectBlockers: (project.blockers ?? []).filter(
+      (blocker) => inRange(blocker.createdAt, start, end) || inRange(blocker.resolvedAt, start, end)
+    ),
+    allProjectBlockers: project.blockers ?? []
+  };
+}
+
+function weekDays(week: WeekData): DateTime[] {
+  return [0, 1, 2, 3, 4].map((offset) => week.start.plus({ days: offset }));
+}
+
+function dayRecord(week: WeekData, memberId: string, day: DateTime): DayRecord {
+  const key = day.toISODate();
+  return {
+    day,
+    daily: week.entries.find((entry) => entry.ownerId === memberId && entry.createdAt.toISODate() === key),
+    absence: week.absences.find((entry) => entry.ownerId === memberId && entry.createdAt.toISODate() === key),
+    session: week.sessions.find((entry) => entry.userId === memberId && entry.date === key),
+    isFuture: day.startOf('day') > week.date.startOf('day')
+  };
+}
+
+function missingDocumentation(week: WeekData): { name: string; day: DateTime }[] {
+  const missing: { name: string; day: DateTime }[] = [];
+  for (const member of config.members) {
+    if (week.unavailableMemberIds.has(member.discordId)) continue;
+    for (const day of weekDays(week)) {
+      const record = dayRecord(week, member.discordId, day);
+      if (!record.isFuture && !record.daily && !record.absence) missing.push({ name: member.name, day });
+    }
+  }
+  return missing;
+}
+
+function renderMarkdown(week: WeekData): string {
+  const { date, start, end } = week;
 
   const out: string[] = [
     '# Wochenbericht Hauptprojekt',
@@ -259,7 +332,7 @@ export function buildBibWeeklyReport(
     '- 8. Stand zum Ende der Woche / nächste Schritte',
     '',
     '## 1. Wochenüberblick',
-    `In dieser Woche wurden ${weekEntries.length} Daily Scrum${weekEntries.length === 1 ? '' : 's'}, ${weekAbsences.length} Abmeldung${weekAbsences.length === 1 ? '' : 'en'} und ${weekMeetings.length} Meeting${weekMeetings.length === 1 ? '' : 's'} dokumentiert.`,
+    `In dieser Woche wurden ${week.entries.length} Daily Scrum${week.entries.length === 1 ? '' : 's'}, ${week.absences.length} Abmeldung${week.absences.length === 1 ? '' : 'en'} und ${week.meetings.length} Meeting${week.meetings.length === 1 ? '' : 's'} dokumentiert.`,
     '',
     '## 2. Tätigkeiten und Arbeitszeiten'
   ];
@@ -267,17 +340,13 @@ export function buildBibWeeklyReport(
   for (const member of config.members) {
     out.push('', `### ${member.name}`, `**Standard-Branch:** ${standardBranch(member.name)}`);
 
-    if (unavailableMemberIds.has(member.discordId)) {
+    if (week.unavailableMemberIds.has(member.discordId)) {
       out.push('- Das Daily-Forum konnte beim Erstellen des Berichts nicht gelesen werden.');
       continue;
     }
 
-    for (let offset = 0; offset < 5; offset++) {
-      const day = start.plus({ days: offset });
-      const dateKey = day.toISODate();
-      const daily = weekEntries.find((entry) => entry.ownerId === member.discordId && entry.createdAt.toISODate() === dateKey);
-      const absence = weekAbsences.find((entry) => entry.ownerId === member.discordId && entry.createdAt.toISODate() === dateKey);
-      const session = weekSessions.find((entry) => entry.userId === member.discordId && entry.date === dateKey);
+    for (const day of weekDays(week)) {
+      const { daily, absence, session, isFuture } = dayRecord(week, member.discordId, day);
 
       out.push('', `#### ${weekdayName(day)}, ${formatDate(day)}`);
 
@@ -287,8 +356,7 @@ export function buildBibWeeklyReport(
       }
 
       if (!daily) {
-        const isFutureWithinPreview = day.startOf('day') > date.startOf('day');
-        out.push(isFutureWithinPreview ? '**Status:** Noch nicht erreicht.' : '**Status:** Keine Daily-Dokumentation vorhanden.');
+        out.push(isFuture ? '**Status:** Noch nicht erreicht.' : '**Status:** Keine Daily-Dokumentation vorhanden.');
         if (session) out.push(`**Arbeitszeit:** ${workText(session, false, day)}`);
         continue;
       }
@@ -309,10 +377,10 @@ export function buildBibWeeklyReport(
   }
 
   out.push('', '## 3. Meetings');
-  if (weekMeetings.length === 0) {
+  if (week.meetings.length === 0) {
     out.push('- Keine Meetings dokumentiert.');
   } else {
-    for (const meeting of weekMeetings) {
+    for (const meeting of week.meetings) {
       const meetingStart = DateTime.fromISO(meeting.startAt, { zone: config.timezone });
       const participants = meeting.participantIds?.length
         ? meeting.participantIds.map(memberName).join(', ')
@@ -323,7 +391,7 @@ export function buildBibWeeklyReport(
       out.push(`**Teilnehmer / eingeladenes Team:** ${participants}`);
       if (meeting.agenda?.trim()) out.push(`**Agenda:** ${meeting.agenda.trim()}`);
 
-      const notes = weekNotes.filter((note) => note.messageId === meeting.messageId);
+      const notes = week.notes.filter((note) => note.messageId === meeting.messageId);
       for (const note of notes) {
         if (note.discussed.trim()) out.push('**Protokoll:**', note.discussed.trim());
         const decisions = cleanLines(note.decisions);
@@ -333,28 +401,28 @@ export function buildBibWeeklyReport(
       }
     }
 
-    if (weekTasks.length > 0) {
+    if (week.tasks.length > 0) {
       out.push('', '### Aufgaben aus Meetings');
-      out.push(...weekTasks.map((task) => `- **${task.id} · ${memberName(task.ownerId)}:** ${task.title}`));
+      out.push(...week.tasks.map((task) => `- **${task.id} · ${memberName(task.ownerId)}:** ${task.title}`));
     }
   }
 
   out.push('', '## 4. Projektentscheidungen');
-  if (weekDecisions.length === 0) {
+  if (week.decisions.length === 0) {
     out.push('- Keine Projektentscheidungen dokumentiert.');
   } else {
-    for (const decision of weekDecisions) {
+    for (const decision of week.decisions) {
       out.push(`- **${decision.title}:** ${decision.decision}${decision.reason ? ` · Begründung: ${decision.reason}` : ''}`);
     }
   }
 
-  const dailyBlockers = weekEntries.flatMap((entry) => {
+  const dailyBlockers = week.entries.flatMap((entry) => {
     const blockers = section(entry.content, ['Blocker']);
     return isRealBlocker(blockers) ? blockers.map((text) => ({ ownerId: entry.ownerId, text })) : [];
   });
 
   out.push('', '## 5. Probleme und Blocker');
-  if (dailyBlockers.length === 0 && weekProjectBlockers.length === 0) {
+  if (dailyBlockers.length === 0 && week.projectBlockers.length === 0) {
     out.push('- Keine Blocker dokumentiert.');
   } else {
     const seen = new Set<string>();
@@ -364,7 +432,7 @@ export function buildBibWeeklyReport(
       seen.add(key);
       out.push(`- **${memberName(blocker.ownerId)}:** ${blocker.text}`);
     }
-    for (const blocker of weekProjectBlockers) {
+    for (const blocker of week.projectBlockers) {
       const key = `${blocker.ownerId}:${blocker.text.toLocaleLowerCase('de-DE')}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -373,26 +441,15 @@ export function buildBibWeeklyReport(
   }
 
   out.push('', '## 6. Abwesenheiten und Abweichungen');
-  if (weekAbsences.length === 0) {
+  if (week.absences.length === 0) {
     out.push('- Keine Abwesenheiten dokumentiert.');
   } else {
-    for (const absence of weekAbsences) {
+    for (const absence of week.absences) {
       out.push(`- **${absence.ownerName} · ${formatDate(absence.createdAt)}:** ${absenceLabel(absence)}`);
     }
   }
 
-  const missing: string[] = [];
-  for (const member of config.members) {
-    if (unavailableMemberIds.has(member.discordId)) continue;
-    for (let offset = 0; offset < 5; offset++) {
-      const day = start.plus({ days: offset });
-      if (day.startOf('day') > date.startOf('day')) continue;
-      const key = day.toISODate();
-      const hasDaily = weekEntries.some((entry) => entry.ownerId === member.discordId && entry.createdAt.toISODate() === key);
-      const hasAbsence = weekAbsences.some((entry) => entry.ownerId === member.discordId && entry.createdAt.toISODate() === key);
-      if (!hasDaily && !hasAbsence) missing.push(`${member.name}: ${formatDate(day)}`);
-    }
-  }
+  const missing = missingDocumentation(week).map((entry) => `${entry.name}: ${formatDate(entry.day)}`);
 
   out.push('', '## 7. Dokumentationsstatus');
   if (missing.length === 0) out.push('- Für alle bisher fälligen regulären Projekttage liegt ein Daily oder eine Abmeldung vor.');
@@ -400,7 +457,7 @@ export function buildBibWeeklyReport(
 
   out.push('', '## 8. Stand zum Ende der Woche / nächste Schritte');
   for (const member of config.members) {
-    const latest = weekEntries
+    const latest = week.entries
       .filter((entry) => entry.ownerId === member.discordId)
       .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())[0];
     const next = latest ? section(latest.content, ['Heute']) : [];
@@ -410,97 +467,644 @@ export function buildBibWeeklyReport(
   return out.join('\n');
 }
 
-function stripMarkdown(value: string): string {
+export function buildBibWeeklyReport(
+  entries: DailyLike[],
+  absences: AbsenceLike[],
+  unavailableMemberIds = new Set<string>(),
+  date = DateTime.now().setZone(config.timezone)
+): string {
+  return renderMarkdown(collectWeek(entries, absences, unavailableMemberIds, date));
+}
+
+// ---------------------------------------------------------------------------
+// PDF: Layout nach bib-Dokumentationsrichtlinie (DIN A4, Arial/Helvetica,
+// Überschriften in bib-Blau, Logo oben rechts, Bundsteg links >= 2 cm).
+// ---------------------------------------------------------------------------
+
+const MM = 72 / 25.4;
+const MARGIN = { left: 25 * MM, right: 20 * MM, top: 30 * MM, bottom: 22 * MM };
+
+const INK = '#1A1A1A';
+const MUTED = '#6B6F76';
+const BIB_BLUE = '#4F81BD';
+const RULE = '#D3DAE3';
+const HEAD_FILL = '#DBE5F1';
+const ABSENT_FILL = '#EEF1F5';
+const ALERT = '#A3392B';
+
+const FONT = { regular: 'Helvetica', bold: 'Helvetica-Bold', italic: 'Helvetica-Oblique' } as const;
+type FontStyle = keyof typeof FONT;
+
+const BODY_SIZE = 9.2;
+const SMALL_SIZE = 8;
+const TABLE_SIZE = 8.4;
+
+// Raster für Tätigkeiten und Meetings: Datum | Bezeichnung | Inhalt.
+const GRID_DATE_WIDTH = 74;
+const GRID_LABEL_WIDTH = 72;
+const BULLET_INDENT = 10;
+
+const WEEKDAY_SHORT = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+
+type Pdf = {
+  doc: PDFKit.PDFDocument;
+  // Kapitel, das am Seitenanfang gilt (für die Kopfzeile).
+  pageChapters: string[];
+  chapter: string;
+};
+
+type Run = { text: string; style?: FontStyle; size?: number; color?: string };
+type TableCell = { runs: Run[]; fill?: string };
+type TableColumn = { title: string; width: number; align?: 'left' | 'center' | 'right' };
+
+const WIN_ANSI_EXTRA = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
+
+// Die PDF-Standardschriften kennen nur WinAnsi. Pfeile werden übersetzt,
+// Emojis und andere nicht darstellbare Zeichen entfernt.
+function pdfText(value: string): string {
   return value
-    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
-    .replace(/^[-*]\s+/, '• ')
-    .replace(/^_([^_]+)_$/, '$1');
+    .replace(/[→⇒➜➔]/g, '->')
+    .replace(/[←⇐]/g, '<-')
+    .replace(/[‐-‒−]/g, '-')
+    .replace(/./gu, (char) => {
+      const code = char.codePointAt(0) ?? 0;
+      const printable = (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff) || WIN_ANSI_EXTRA.includes(char);
+      return printable ? char : '';
+    })
+    .replace(/ {2,}/g, ' ')
+    .replace(/ +([,.;:!?)])/g, '$1')
+    .trim();
 }
 
-function ensureSpace(doc: PDFKit.PDFDocument, needed: number): void {
-  const limit = doc.page.height - PAGE_BOTTOM;
-  if (doc.y + needed > limit) doc.addPage();
+function shortDate(date: DateTime): string {
+  return `${WEEKDAY_SHORT[date.weekday - 1]} ${date.toFormat('dd.MM.')}`;
 }
 
-function labelValue(
-  doc: PDFKit.PDFDocument,
+function hoursText(minutes: number): string {
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')} h`;
+}
+
+function contentWidth(doc: PDFKit.PDFDocument): number {
+  return doc.page.width - MARGIN.left - MARGIN.right;
+}
+
+function setFont(doc: PDFKit.PDFDocument, style: FontStyle, size: number, color = INK): void {
+  doc.font(FONT[style]).fontSize(size).fillColor(color);
+}
+
+function ensureSpace(pdf: Pdf, needed: number): void {
+  if (pdf.doc.y + needed > pdf.doc.page.height - MARGIN.bottom) pdf.doc.addPage();
+}
+
+function atPageTop(doc: PDFKit.PDFDocument): boolean {
+  return doc.y <= MARGIN.top + 1;
+}
+
+function drawChapter(pdf: Pdf, number: number, title: string): void {
+  const { doc } = pdf;
+  ensureSpace(pdf, 90);
+  if (!atPageTop(doc)) doc.y += 16;
+
+  const label = `${number}  ${title}`;
+  if (atPageTop(doc)) pdf.pageChapters[pdf.pageChapters.length - 1] = label;
+  pdf.chapter = label;
+
+  const y = doc.y;
+  setFont(doc, 'bold', 13, BIB_BLUE);
+  doc.text(String(number), MARGIN.left, y, { lineBreak: false });
+  doc.text(title, MARGIN.left + 24, y, { width: contentWidth(doc) - 24 });
+  doc.y = y + 24;
+}
+
+function drawSubheading(pdf: Pdf, number: string, title: string): void {
+  const { doc } = pdf;
+  ensureSpace(pdf, 70);
+  if (!atPageTop(doc)) doc.y += 10;
+  const y = doc.y;
+  setFont(doc, 'bold', 10.5, BIB_BLUE);
+  doc.text(number, MARGIN.left, y, { lineBreak: false });
+  doc.text(title, MARGIN.left + 24, y, { width: contentWidth(doc) - 24 });
+  doc.y = y + 18;
+}
+
+function drawNote(pdf: Pdf, text: string, color = MUTED): void {
+  const { doc } = pdf;
+  setFont(doc, 'regular', SMALL_SIZE, color);
+  const height = doc.heightOfString(text, { width: contentWidth(doc), lineGap: 1 });
+  ensureSpace(pdf, height);
+  const y = doc.y;
+  doc.text(text, MARGIN.left, y, { width: contentWidth(doc), lineGap: 1 });
+  doc.y = y + height + 3;
+}
+
+function runsHeight(doc: PDFKit.PDFDocument, runs: Run[], width: number): number {
+  return runs.reduce((sum, run) => {
+    setFont(doc, run.style ?? 'regular', run.size ?? TABLE_SIZE);
+    return sum + doc.heightOfString(run.text || ' ', { width, lineGap: 0.6 });
+  }, 0);
+}
+
+function drawTable(pdf: Pdf, columns: TableColumn[], rows: TableCell[][]): void {
+  const { doc } = pdf;
+  const padX = 5;
+  const padY = 5;
+  const headerHeight = 19;
+  const totalWidth = columns.reduce((sum, column) => sum + column.width, 0);
+  const rowHeight = (row: TableCell[]): number =>
+    Math.max(...row.map((cell, index) => runsHeight(doc, cell.runs, columns[index].width - padX * 2))) + padY * 2;
+
+  const drawHeader = (): void => {
+    const y = doc.y;
+    doc.rect(MARGIN.left, y, totalWidth, headerHeight).fill(HEAD_FILL);
+    let x = MARGIN.left;
+    for (const column of columns) {
+      setFont(doc, 'bold', SMALL_SIZE, INK);
+      doc.text(column.title, x + padX, y + 6, { width: column.width - padX * 2, align: column.align ?? 'left', lineBreak: false });
+      x += column.width;
+    }
+    doc.y = y + headerHeight;
+  };
+
+  ensureSpace(pdf, headerHeight + (rows[0] ? rowHeight(rows[0]) : 0));
+  drawHeader();
+
+  for (const row of rows) {
+    const height = rowHeight(row);
+    if (doc.y + height > doc.page.height - MARGIN.bottom) {
+      doc.addPage();
+      drawHeader();
+    }
+
+    const y = doc.y;
+    let x = MARGIN.left;
+    row.forEach((cell, index) => {
+      const column = columns[index];
+      const width = column.width - padX * 2;
+      if (cell.fill) doc.rect(x + 1, y + 1, column.width - 2, height - 2).fill(cell.fill);
+      let textY = y + (height - runsHeight(doc, cell.runs, width)) / 2;
+      for (const run of cell.runs) {
+        setFont(doc, run.style ?? 'regular', run.size ?? TABLE_SIZE, run.color ?? INK);
+        const options = { width, align: column.align ?? 'left', lineGap: 0.6 } as const;
+        doc.text(run.text, x + padX, textY, options);
+        textY += doc.heightOfString(run.text || ' ', options);
+      }
+      x += column.width;
+    });
+
+    doc.moveTo(MARGIN.left, y + height).lineTo(MARGIN.left + totalWidth, y + height).lineWidth(0.5).strokeColor(RULE).stroke();
+    doc.y = y + height;
+  }
+}
+
+// Zeile im Raster. Der Datumsblock links wird nur in der ersten Zeile eines Eintrags gezeichnet.
+function drawGridRow(
+  pdf: Pdf,
   label: string,
-  value: string,
-  options?: { x?: number; width?: number; fontSize?: number; muted?: boolean }
+  content: string | string[],
+  options: { labelColor?: string; textColor?: string; bold?: boolean } = {}
 ): void {
-  const x = options?.x ?? PAGE_LEFT;
-  const width = options?.width ?? doc.page.width - PAGE_LEFT - PAGE_RIGHT;
-  const size = options?.fontSize ?? 9.2;
-  ensureSpace(doc, 24);
-  doc.fillColor(options?.muted ? TEXT_MUTED : TEXT_DARK);
-  doc.font('Helvetica-Bold').fontSize(size).text(`${label}: `, x, doc.y, { continued: true, width });
-  doc.font('Helvetica').fontSize(size).text(value, { width });
-  doc.fillColor(TEXT_DARK);
-  doc.moveDown(0.15);
-}
+  const { doc } = pdf;
+  const x = MARGIN.left + GRID_DATE_WIDTH + GRID_LABEL_WIDTH;
+  const width = contentWidth(doc) - GRID_DATE_WIDTH - GRID_LABEL_WIDTH;
+  const items = Array.isArray(content) ? content : [content];
+  const bullets = Array.isArray(content);
 
-function drawBullet(doc: PDFKit.PDFDocument, text: string, x = PAGE_LEFT, width?: number): void {
-  const available = width ?? doc.page.width - PAGE_LEFT - PAGE_RIGHT;
-  ensureSpace(doc, 26);
-  const y = doc.y;
-  doc.fillColor(TEXT_DARK).font('Helvetica').fontSize(9.2).text('•', x + 3, y, { width: 10, lineBreak: false });
-  doc.font('Helvetica').fontSize(9.2).text(stripMarkdown(text), x + 17, y, {
-    width: available - 17,
-    lineGap: 1.2,
-    paragraphGap: 2
+  items.forEach((raw, index) => {
+    const text = pdfText(raw) || '–';
+    const textX = bullets ? x + BULLET_INDENT : x;
+    const textWidth = bullets ? width - BULLET_INDENT : width;
+    setFont(doc, options.bold ? 'bold' : 'regular', BODY_SIZE, options.textColor ?? INK);
+    const height = doc.heightOfString(text, { width: textWidth, lineGap: 1 });
+    if (height < 200) ensureSpace(pdf, height);
+
+    const y = doc.y;
+    if (index === 0 && label) {
+      setFont(doc, 'bold', SMALL_SIZE, options.labelColor ?? MUTED);
+      doc.text(label, MARGIN.left + GRID_DATE_WIDTH, y + 1.2, { width: GRID_LABEL_WIDTH - 6, lineBreak: false });
+    }
+    setFont(doc, options.bold ? 'bold' : 'regular', BODY_SIZE, options.textColor ?? INK);
+    if (bullets) doc.text('•', x, y, { width: BULLET_INDENT, lineBreak: false });
+    doc.text(text, textX, y, { width: textWidth, lineGap: 1 });
+    doc.y = Math.max(doc.y, y + height) + 2;
   });
-  doc.moveDown(0.08);
 }
 
-function drawMainSection(doc: PDFKit.PDFDocument, title: string): void {
-  ensureSpace(doc, 54);
-  doc.moveDown(0.45);
-  const y = doc.y;
-  doc.fillColor(TEXT_DARK).font('Helvetica-Bold').fontSize(15).text(title, PAGE_LEFT, y, {
-    width: doc.page.width - PAGE_LEFT - PAGE_RIGHT
+type GridEntry = { dateBottom: number; page: number };
+
+function startGridEntry(pdf: Pdf, title: string, subtitle: string | undefined, firstHeight: number): GridEntry {
+  const { doc } = pdf;
+  ensureSpace(pdf, Math.max(firstHeight, 30) + 12);
+  const top = doc.y;
+  doc.moveTo(MARGIN.left, top).lineTo(MARGIN.left + contentWidth(doc), top).lineWidth(0.5).strokeColor(RULE).stroke();
+  const y = top + 7;
+  setFont(doc, 'bold', BODY_SIZE, INK);
+  doc.text(title, MARGIN.left, y, { width: GRID_DATE_WIDTH - 8, lineBreak: false });
+  if (subtitle) {
+    setFont(doc, 'regular', SMALL_SIZE, MUTED);
+    doc.text(subtitle, MARGIN.left, y + 12.5, { width: GRID_DATE_WIDTH - 8, lineBreak: false });
+  }
+  doc.y = y;
+  return { dateBottom: y + (subtitle ? 24 : 12), page: pdf.pageChapters.length };
+}
+
+function endGridEntry(pdf: Pdf, entry: GridEntry): void {
+  // Nach einem Seitenumbruch innerhalb des Eintrags gilt die Höhe des Datumsblocks nicht mehr.
+  if (pdf.pageChapters.length === entry.page) pdf.doc.y = Math.max(pdf.doc.y, entry.dateBottom);
+  pdf.doc.y += 5;
+}
+
+function workCell(record: DayRecord): TableCell {
+  const { day, absence, daily, session, isFuture } = record;
+  if (isFuture) return { runs: [{ text: '–', color: MUTED }] };
+  if (absence && !daily) {
+    const label = absence.kind === 'Krankheit' || absence.kind === 'Termin' ? absence.kind : 'Abwesend';
+    return { runs: [{ text: label, color: MUTED }], fill: ABSENT_FILL };
+  }
+
+  if (!session) {
+    if (day.weekday === 5) return { runs: [{ text: 'nicht übermittelt', style: 'italic', color: MUTED }] };
+    if (!daily) return { runs: [{ text: 'keine Angabe', style: 'italic', color: ALERT }] };
+    return { runs: [{ text: 'nicht erfasst', style: 'italic', color: MUTED }] };
+  }
+
+  const { start, end, netMinutes } = sessionTimes(session);
+  if (!end) {
+    return {
+      runs: [
+        { text: `ab ${start.toFormat('HH:mm')}` },
+        { text: day.weekday === 5 ? 'Ende nicht übermittelt' : 'nicht abgeschlossen', style: 'italic', size: 7.2, color: MUTED }
+      ]
+    };
+  }
+
+  const runs: Run[] = [
+    { text: `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}` },
+    { text: hoursText(netMinutes), style: 'bold' }
+  ];
+  const notes = [
+    end.toISODate() !== start.toISODate() ? 'bis Folgetag' : '',
+    session.provenance === 'manual-estimated' ? 'nachgetragen, geschätzt' : session.provenance === 'manual-exact' ? 'nachgetragen' : ''
+  ].filter(Boolean);
+  if (notes.length > 0) runs.push({ text: notes.join(', '), style: 'italic', size: 7.2, color: MUTED });
+  return { runs };
+}
+
+function netMinutesInWeek(week: WeekData, memberId: string): number {
+  return weekDays(week).reduce((sum, day) => {
+    const record = dayRecord(week, memberId, day);
+    if (!record.session || (record.absence && !record.daily)) return sum;
+    return sum + sessionTimes(record.session).netMinutes;
+  }, 0);
+}
+
+function drawTitleBlock(pdf: Pdf, week: WeekData): void {
+  const { doc } = pdf;
+  const { start, end, date } = week;
+  doc.y = MARGIN.top;
+
+  setFont(doc, 'bold', 24, INK);
+  doc.text('Wochenbericht', MARGIN.left, doc.y, { width: contentWidth(doc) });
+  doc.y += 2;
+  setFont(doc, 'regular', 12, BIB_BLUE);
+  doc.text(`Kalenderwoche ${start.weekNumber} · ${start.toFormat('dd.MM.')} – ${end.toFormat('dd.MM.yyyy')}`, MARGIN.left, doc.y, {
+    width: contentWidth(doc)
   });
-  doc.moveTo(PAGE_LEFT, doc.y + 4)
-    .lineTo(doc.page.width - PAGE_RIGHT, doc.y + 4)
-    .lineWidth(0.7)
-    .strokeColor(RULE)
-    .stroke();
-  doc.moveDown(0.5);
+  doc.y += 16;
+
+  const meta: [string, string][] = [
+    ['Projekt', 'Hauptprojekt'],
+    ['Team', config.members.map((member) => member.name).join(', ')],
+    ['Erstellt', `${formatDate(date)}, ${date.toFormat('HH:mm')} Uhr`]
+  ];
+  for (const [label, value] of meta) {
+    const y = doc.y;
+    setFont(doc, 'bold', SMALL_SIZE, MUTED);
+    doc.text(label, MARGIN.left, y + 1, { width: GRID_DATE_WIDTH, lineBreak: false });
+    setFont(doc, 'regular', BODY_SIZE, INK);
+    doc.text(value, MARGIN.left + GRID_DATE_WIDTH, y, { width: contentWidth(doc) - GRID_DATE_WIDTH });
+    doc.y = y + 14;
+  }
+
+  doc.y += 8;
+  doc.moveTo(MARGIN.left, doc.y).lineTo(MARGIN.left + contentWidth(doc), doc.y).lineWidth(0.8).strokeColor(BIB_BLUE).stroke();
+  doc.y += 6;
 }
 
-function drawPanelHeading(doc: PDFKit.PDFDocument, title: string): void {
-  ensureSpace(doc, 42);
-  doc.moveDown(0.35);
-  const y = doc.y;
-  const width = doc.page.width - PAGE_LEFT - PAGE_RIGHT;
-  doc.roundedRect(PAGE_LEFT, y, width, 24, 3).fill(PANEL);
-  doc.fillColor(TEXT_DARK).font('Helvetica-Bold').fontSize(12).text(title, PAGE_LEFT + 9, y + 6, {
-    width: width - 18,
-    lineBreak: false
+function drawAttendance(pdf: Pdf, week: WeekData): void {
+  const { doc } = pdf;
+  drawChapter(pdf, 1, 'Anwesenheit und Arbeitszeiten');
+
+  const days = weekDays(week);
+  const sumWidth = 62;
+  const dayWidth = (contentWidth(doc) - GRID_DATE_WIDTH - sumWidth) / days.length;
+  const columns: TableColumn[] = [
+    { title: 'Name', width: GRID_DATE_WIDTH },
+    ...days.map((day): TableColumn => ({ title: shortDate(day), width: dayWidth, align: 'center' })),
+    { title: 'Summe', width: sumWidth, align: 'right' }
+  ];
+  const rows = config.members.map((member): TableCell[] => {
+    const total = netMinutesInWeek(week, member.discordId);
+    return [
+      { runs: [{ text: member.name, style: 'bold' }] },
+      ...days.map((day) => workCell(dayRecord(week, member.discordId, day))),
+      { runs: [{ text: total > 0 ? hoursText(total) : '–', style: 'bold' }] }
+    ];
   });
-  doc.y = y + 30;
+  drawTable(pdf, columns, rows);
+  doc.y += 5;
+  drawNote(pdf, 'Arbeitszeiten von Beginn bis Ende, Summen netto nach Abzug der Pausen.');
+
+  doc.y += 6;
+  const missing = missingDocumentation(week);
+  const unavailable = config.members.filter((member) => week.unavailableMemberIds.has(member.discordId));
+  const absences = [...week.absences].sort((a, b) => a.createdAt.toMillis() - b.createdAt.toMillis());
+
+  const lines: { label: string; text: string; color?: string }[] = [
+    ...absences.map((absence) => ({
+      label: 'Abwesend',
+      text: `${absence.ownerName}, ${shortDate(absence.createdAt)}: ${absenceLabel(absence)}`
+    })),
+    ...missing.map((entry) => ({
+      label: 'Ohne Daily',
+      text: `${entry.name}, ${shortDate(entry.day)}: weder Daily noch Abmeldung dokumentiert`,
+      color: ALERT
+    })),
+    ...unavailable.map((member) => ({
+      label: 'Hinweis',
+      text: `Das Daily-Forum von ${member.name} konnte beim Erstellen nicht gelesen werden.`,
+      color: ALERT
+    }))
+  ];
+  if (missing.length === 0 && unavailable.length === 0) {
+    lines.push({ label: 'Dailies', text: 'Für alle bisher fälligen Projekttage liegt ein Daily oder eine Abmeldung vor.' });
+  }
+
+  for (const line of lines) {
+    const y = doc.y;
+    setFont(doc, 'bold', SMALL_SIZE, MUTED);
+    doc.text(line.label, MARGIN.left, y + 0.8, { width: GRID_DATE_WIDTH, lineBreak: false });
+    setFont(doc, 'regular', BODY_SIZE - 0.4, line.color ?? INK);
+    doc.text(pdfText(line.text), MARGIN.left + GRID_DATE_WIDTH, y, { width: contentWidth(doc) - GRID_DATE_WIDTH, lineGap: 1 });
+    doc.y += 3;
+  }
 }
 
-function drawDayHeading(doc: PDFKit.PDFDocument, title: string): void {
-  ensureSpace(doc, 42);
-  doc.moveDown(0.32);
-  const y = doc.y;
-  const width = doc.page.width - PAGE_LEFT - PAGE_RIGHT;
-  doc.moveTo(PAGE_LEFT, y)
-    .lineTo(PAGE_LEFT + width, y)
-    .lineWidth(0.55)
-    .strokeColor(RULE)
-    .stroke();
-  doc.fillColor(TEXT_DARK).font('Helvetica-Bold').fontSize(10.7).text(title, PAGE_LEFT, y + 6, { width });
-  doc.moveDown(0.15);
+function drawActivities(pdf: Pdf, week: WeekData): void {
+  const { doc } = pdf;
+  drawChapter(pdf, 2, 'Tätigkeiten');
+  drawNote(pdf, 'Erledigt: seit dem letzten Daily abgeschlossen · Geplant: Vorhaben für den jeweiligen Tag, laut Daily Scrum.');
+
+  config.members.forEach((member, index) => {
+    drawSubheading(pdf, `2.${index + 1}`, member.name);
+
+    if (week.unavailableMemberIds.has(member.discordId)) {
+      drawNote(pdf, 'Das Daily-Forum konnte beim Erstellen des Berichts nicht gelesen werden.', ALERT);
+      return;
+    }
+
+    for (const day of weekDays(week)) {
+      const { daily, absence, isFuture } = dayRecord(week, member.discordId, day);
+      if (isFuture) continue;
+
+      if (absence && !daily) {
+        const entry = startGridEntry(pdf, shortDate(day), undefined, 14);
+        drawGridRow(pdf, 'Abwesend', absenceLabel(absence), { textColor: MUTED });
+        endGridEntry(pdf, entry);
+        continue;
+      }
+
+      if (!daily) {
+        const entry = startGridEntry(pdf, shortDate(day), undefined, 14);
+        drawGridRow(pdf, 'Status', 'Weder Daily noch Abmeldung dokumentiert.', { textColor: ALERT });
+        endGridEntry(pdf, entry);
+        continue;
+      }
+
+      const done = section(daily.content, ['Seit dem letzten Daily', 'Gestern']);
+      const planned = section(daily.content, ['Heute']);
+      const blockers = section(daily.content, ['Blocker']);
+
+      const entry = startGridEntry(pdf, shortDate(day), `Daily ${daily.createdAt.toFormat('HH:mm')}`, 30);
+      drawGridRow(pdf, 'Erledigt', done.length > 0 ? done : ['–']);
+      doc.y += 4;
+      drawGridRow(pdf, 'Geplant', planned.length > 0 ? planned : ['–']);
+      if (isRealBlocker(blockers)) {
+        doc.y += 4;
+        drawGridRow(pdf, 'Blocker', blockers, { labelColor: ALERT });
+      }
+      endGridEntry(pdf, entry);
+    }
+  });
 }
 
-async function markdownToPdf(markdown: string, date: DateTime): Promise<Buffer> {
+function drawMeetings(pdf: Pdf, week: WeekData): void {
+  const { doc } = pdf;
+  drawChapter(pdf, 3, 'Meetings');
+
+  if (week.meetings.length === 0) {
+    drawNote(pdf, 'Keine Meetings in dieser Woche.');
+    return;
+  }
+
+  for (const meeting of week.meetings) {
+    const start = DateTime.fromISO(meeting.startAt, { zone: config.timezone });
+    const end = DateTime.fromISO(meeting.endAt, { zone: config.timezone });
+    const time = end.isValid ? `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}` : start.toFormat('HH:mm');
+    const participants = meeting.participantIds?.length
+      ? meeting.participantIds.map(memberName).join(', ')
+      : config.members.map((member) => member.name).join(', ');
+
+    const entry = startGridEntry(pdf, shortDate(start), time, 30);
+    drawGridRow(pdf, 'Thema', meeting.title, { bold: true });
+    drawGridRow(pdf, 'Ort', meeting.venueLabel);
+    drawGridRow(pdf, 'Teilnehmer', participants);
+    if (meeting.agenda?.trim()) drawGridRow(pdf, 'Agenda', meeting.agenda.trim());
+
+    for (const note of week.notes.filter((entry) => entry.messageId === meeting.messageId)) {
+      if (note.discussed.trim()) drawGridRow(pdf, 'Protokoll', note.discussed.trim());
+      const decisions = cleanLines(note.decisions);
+      if (decisions.length > 0) drawGridRow(pdf, 'Entscheidungen', decisions);
+      const tasks = cleanLines(note.tasks);
+      if (tasks.length > 0) drawGridRow(pdf, 'Aufgaben', tasks);
+    }
+    endGridEntry(pdf, entry);
+  }
+
+  if (week.tasks.length > 0) {
+    doc.y += 8;
+    ensureSpace(pdf, 60);
+    setFont(doc, 'bold', BODY_SIZE, INK);
+    doc.text('Aufgaben aus Meetings', MARGIN.left, doc.y, { width: contentWidth(doc) });
+    doc.y += 5;
+    drawTable(
+      pdf,
+      [
+        { title: 'Person', width: GRID_DATE_WIDTH },
+        { title: 'Aufgabe', width: contentWidth(doc) - GRID_DATE_WIDTH }
+      ],
+      week.tasks.map((task) => [
+        { runs: [{ text: memberName(task.ownerId) }] },
+        { runs: [{ text: pdfText(task.title) }] }
+      ])
+    );
+  }
+}
+
+function drawDecisions(pdf: Pdf, week: WeekData): void {
+  const { doc } = pdf;
+  drawChapter(pdf, 4, 'Entscheidungen');
+
+  if (week.decisions.length === 0) {
+    drawNote(pdf, 'Keine Projektentscheidungen in dieser Woche.');
+    return;
+  }
+
+  const rest = contentWidth(doc) - GRID_DATE_WIDTH;
+  drawTable(
+    pdf,
+    [
+      { title: 'Datum', width: GRID_DATE_WIDTH },
+      { title: 'Entscheidung', width: rest * 0.55 },
+      { title: 'Begründung', width: rest * 0.45 }
+    ],
+    week.decisions.map((decision) => [
+      { runs: [{ text: shortDate(DateTime.fromISO(decision.createdAt, { zone: config.timezone })) }] },
+      { runs: [{ text: pdfText(decision.title), style: 'bold' }, { text: pdfText(decision.decision) }] },
+      { runs: [{ text: decision.reason ? pdfText(decision.reason) : '–', color: decision.reason ? INK : MUTED }] }
+    ])
+  );
+}
+
+function drawBlockers(pdf: Pdf, week: WeekData): void {
+  const { doc } = pdf;
+  drawChapter(pdf, 5, 'Probleme und Blocker');
+
+  type Row = { date: DateTime; ownerId: string; text: string; blocker?: ProjectBlocker };
+  const rows: Row[] = [];
+  const seen = new Set<string>();
+  const add = (row: Row): void => {
+    const key = `${row.ownerId}:${normalizedText(row.text)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(row);
+  };
+
+  // Daily-Blocker werden beim Absenden als Projekt-Blocker gespeichert; der Status kommt von dort.
+  const tracked = (ownerId: string, text: string, reportedAt: DateTime): ProjectBlocker | undefined =>
+    week.allProjectBlockers
+      .filter((blocker) => blocker.ownerId === ownerId && normalizedText(blocker.text) === normalizedText(text))
+      .filter((blocker) => DateTime.fromISO(blocker.createdAt, { zone: config.timezone }) <= reportedAt.plus({ hours: 1 }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+
+  for (const entry of week.entries) {
+    const blockers = section(entry.content, ['Blocker']);
+    if (!isRealBlocker(blockers)) continue;
+    for (const text of blockers) {
+      add({ date: entry.createdAt, ownerId: entry.ownerId, text, blocker: tracked(entry.ownerId, text, entry.createdAt) });
+    }
+  }
+  for (const blocker of week.projectBlockers) {
+    add({ date: DateTime.fromISO(blocker.createdAt, { zone: config.timezone }), ownerId: blocker.ownerId, text: blocker.text, blocker });
+  }
+
+  if (rows.length === 0) {
+    drawNote(pdf, 'Keine Blocker in dieser Woche.');
+    return;
+  }
+
+  const statusRun = (blocker?: ProjectBlocker): Run => {
+    if (!blocker) return { text: '–', color: MUTED };
+    if (blocker.status === 'open') return { text: 'offen', style: 'bold', color: ALERT };
+    const resolved = blocker.resolvedAt ? DateTime.fromISO(blocker.resolvedAt, { zone: config.timezone }) : undefined;
+    return { text: resolved?.isValid ? `gelöst ${resolved.toFormat('dd.MM.')}` : 'gelöst', color: MUTED };
+  };
+
+  const statusWidth = 70;
+  drawTable(
+    pdf,
+    [
+      { title: 'Gemeldet', width: GRID_DATE_WIDTH },
+      { title: 'Person', width: GRID_LABEL_WIDTH },
+      { title: 'Blocker', width: contentWidth(doc) - GRID_DATE_WIDTH - GRID_LABEL_WIDTH - statusWidth },
+      { title: 'Status', width: statusWidth }
+    ],
+    rows
+      .sort((a, b) => a.date.toMillis() - b.date.toMillis())
+      .map((row) => [
+        { runs: [{ text: shortDate(row.date) }] },
+        { runs: [{ text: memberName(row.ownerId) }] },
+        { runs: [{ text: pdfText(row.text) }] },
+        { runs: [statusRun(row.blocker)] }
+      ])
+  );
+}
+
+function drawPageFrame(pdf: Pdf, week: WeekData): void {
+  const { doc } = pdf;
+  const range = doc.bufferedPageRange();
+  const total = range.count;
+  const right = doc.page.width - MARGIN.right;
+  const logoBox = { width: 96, height: 36, top: 12 * MM };
+  let logoAvailable = existsSync(logoPath);
+  if (!logoAvailable) console.warn(`[Weekly PDF] Logo fehlt: ${logoPath}`);
+
+  for (let index = 0; index < total; index++) {
+    doc.switchToPage(range.start + index);
+    // Kopf- und Fußzeile liegen außerhalb des Satzspiegels; ohne Rand gibt es keinen automatischen Seitenumbruch.
+    const margins = doc.page.margins;
+    doc.page.margins = { top: 0, bottom: 0, left: 0, right: 0 };
+
+    if (logoAvailable) {
+      try {
+        doc.image(logoPath, right - logoBox.width, logoBox.top, {
+          fit: [logoBox.width, logoBox.height],
+          align: 'right',
+          valign: 'bottom'
+        });
+      } catch (error) {
+        console.warn(`[Weekly PDF] Logo konnte nicht eingebettet werden: ${logoPath}`, error);
+        logoAvailable = false;
+      }
+    }
+
+    const chapter = pdf.pageChapters[index];
+    if (index > 0 && chapter) {
+      setFont(doc, 'regular', SMALL_SIZE, MUTED);
+      doc.text(chapter, MARGIN.left, logoBox.top + logoBox.height - 9, { width: contentWidth(doc) - logoBox.width - 10, lineBreak: false });
+    }
+
+    const footerY = doc.page.height - 14 * MM;
+    doc.moveTo(MARGIN.left, footerY - 6).lineTo(right, footerY - 6).lineWidth(0.5).strokeColor(RULE).stroke();
+    setFont(doc, 'regular', 7.5, MUTED);
+    doc.text(
+      `Wochenbericht KW ${week.start.weekNumber} / ${week.start.weekYear} · Team ${config.members.map((member) => member.name).join(', ')}`,
+      MARGIN.left,
+      footerY,
+      { width: contentWidth(doc) - 80, lineBreak: false }
+    );
+    setFont(doc, 'regular', 8.5, INK);
+    doc.text(`Seite ${index + 1} von ${total}`, right - 80, footerY - 1, { width: 80, align: 'right', lineBreak: false });
+
+    doc.page.margins = margins;
+  }
+}
+
+async function renderPdf(week: WeekData): Promise<Buffer> {
   const doc = new PDFDocument({
     size: 'A4',
-    margins: { top: PAGE_TOP, bottom: PAGE_BOTTOM, left: PAGE_LEFT, right: PAGE_RIGHT },
+    margins: MARGIN,
     bufferPages: true,
-    info: { Title: `Wochenbericht KW ${date.weekNumber}` }
+    lang: 'de-DE',
+    displayTitle: true,
+    info: {
+      Title: `Wochenbericht KW ${week.start.weekNumber} / ${week.start.weekYear}`,
+      Author: config.members.map((member) => member.name).join(', '),
+      Subject: `Hauptprojekt · ${formatDate(week.start)} - ${formatDate(week.end)}`
+    }
   });
 
   const chunks: Buffer[] = [];
@@ -510,152 +1114,32 @@ async function markdownToPdf(markdown: string, date: DateTime): Promise<Buffer> 
     doc.on('error', reject);
   });
 
-  if (existsSync(logoPath)) {
-    try {
-      const logoWidth = 250;
-      const x = (doc.page.width - logoWidth) / 2;
-      doc.image(logoPath, x, 40, { width: logoWidth });
-      doc.y = 40 + 95 + 74;
-    } catch (error) {
-      console.warn(`[Weekly PDF] Logo konnte nicht eingebettet werden: ${logoPath}`, error);
-      doc.y = 90;
-    }
-  } else {
-    console.warn(`[Weekly PDF] Logo fehlt: ${logoPath}`);
-    doc.y = 90;
-  }
+  const pdf: Pdf = { doc, pageChapters: [''], chapter: '' };
+  doc.on('pageAdded', () => pdf.pageChapters.push(pdf.chapter));
 
-  let onCover = true;
-  const lines = markdown.split('\n');
-
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-
-    if (!line) {
-      doc.moveDown(onCover ? 0.32 : 0.2);
-      continue;
-    }
-
-    if (line === '## 1. Wochenüberblick' && onCover) {
-      doc.addPage();
-      onCover = false;
-      drawMainSection(doc, '1. Wochenüberblick');
-      continue;
-    }
-
-    if (line.startsWith('# ')) {
-      doc.fillColor(TEXT_DARK)
-        .font('Helvetica-Bold')
-        .fontSize(21)
-        .text(stripMarkdown(line.slice(2)), PAGE_LEFT, doc.y, {
-          width: doc.page.width - PAGE_LEFT - PAGE_RIGHT,
-          align: 'center'
-        });
-      doc.moveDown(1.15);
-      continue;
-    }
-
-    if (onCover && line === '## Inhaltsverzeichnis') {
-      doc.moveDown(0.85);
-      doc.fillColor(TEXT_DARK).font('Helvetica-Bold').fontSize(12.5).text('Inhaltsverzeichnis', PAGE_LEFT + 54, doc.y, {
-        width: doc.page.width - (PAGE_LEFT + 54) * 2
-      });
-      doc.moveDown(0.4);
-      continue;
-    }
-
-    if (line.startsWith('## ')) {
-      drawMainSection(doc, stripMarkdown(line.slice(3)));
-      continue;
-    }
-
-    if (line.startsWith('### ')) {
-      drawPanelHeading(doc, stripMarkdown(line.slice(4)));
-      continue;
-    }
-
-    if (line.startsWith('#### ')) {
-      drawDayHeading(doc, stripMarkdown(line.slice(5)));
-      continue;
-    }
-
-    const labelMatch = line.match(/^\*\*([^*]+):\*\*\s*(.*)$/);
-    if (labelMatch) {
-      if (onCover) {
-        const coverX = PAGE_LEFT + 54;
-        const coverWidth = doc.page.width - (PAGE_LEFT + 54) * 2;
-        labelValue(doc, labelMatch[1], stripMarkdown(labelMatch[2]), {
-          x: coverX,
-          width: coverWidth,
-          fontSize: 10
-        });
-      } else {
-        const muted = ['Daily', 'Standard-Branch', 'Abweichender Branch', 'Datum / Uhrzeit', 'Ort', 'Teilnehmer / eingeladenes Team'].includes(labelMatch[1]);
-        labelValue(doc, labelMatch[1], stripMarkdown(labelMatch[2]), { fontSize: muted ? 8.9 : 9.2, muted });
-      }
-      continue;
-    }
-
-    if (line.startsWith('- ')) {
-      if (onCover) {
-        const x = PAGE_LEFT + 62;
-        drawBullet(doc, line.slice(2), x, doc.page.width - x - (PAGE_RIGHT + 54));
-      } else {
-        drawBullet(doc, line.slice(2));
-      }
-      continue;
-    }
-
-    ensureSpace(doc, 30);
-    doc.fillColor(TEXT_DARK).font('Helvetica').fontSize(onCover ? 10 : 9.35).text(stripMarkdown(line), onCover ? PAGE_LEFT + 54 : PAGE_LEFT, doc.y, {
-      width: onCover ? doc.page.width - (PAGE_LEFT + 54) * 2 : doc.page.width - PAGE_LEFT - PAGE_RIGHT,
-      lineGap: 1.35,
-      paragraphGap: 3
-    });
-    doc.moveDown(0.12);
-  }
-
-  const range = doc.bufferedPageRange();
-  const totalPages = range.count;
-  for (let index = 0; index < totalPages; index++) {
-    doc.switchToPage(range.start + index);
-    const width = doc.page.width - PAGE_LEFT - PAGE_RIGHT;
-
-    if (index > 0) {
-      doc.fillColor(TEXT_MUTED).font('Helvetica').fontSize(8.2).text(
-        `Wochenbericht Hauptprojekt · KW ${date.weekNumber} / ${date.weekYear}`,
-        PAGE_LEFT,
-        28,
-        { width, align: 'left', lineBreak: false }
-      );
-      doc.moveTo(PAGE_LEFT, 43)
-        .lineTo(doc.page.width - PAGE_RIGHT, 43)
-        .lineWidth(0.45)
-        .strokeColor(RULE)
-        .stroke();
-    }
-
-    doc.fillColor(TEXT_MUTED).font('Helvetica').fontSize(8).text(
-      `Hauptprojekt · Wochenbericht · Seite ${index + 1} von ${totalPages}`,
-      PAGE_LEFT,
-      doc.page.height - 30,
-      { width, align: 'center', lineBreak: false }
-    );
-  }
+  drawTitleBlock(pdf, week);
+  drawAttendance(pdf, week);
+  drawActivities(pdf, week);
+  drawMeetings(pdf, week);
+  drawDecisions(pdf, week);
+  drawBlockers(pdf, week);
+  drawPageFrame(pdf, week);
 
   doc.end();
   return done;
 }
 
 export async function weeklyReportAttachments(
-  markdown: string,
+  entries: DailyLike[],
+  absences: AbsenceLike[],
+  unavailableMemberIds = new Set<string>(),
   date = DateTime.now().setZone(config.timezone)
 ): Promise<AttachmentBuilder[]> {
-  const week = String(date.weekNumber).padStart(2, '0');
-  const stem = `Wochenbericht_KW${week}_${date.weekYear}`;
-  const pdf = await markdownToPdf(markdown, date);
+  const week = collectWeek(entries, absences, unavailableMemberIds, date);
+  const stem = `Wochenbericht_KW${String(week.start.weekNumber).padStart(2, '0')}_${week.start.weekYear}`;
+  const pdf = await renderPdf(week);
   return [
-    new AttachmentBuilder(Buffer.from(markdown, 'utf8'), { name: `${stem}.md` }),
+    new AttachmentBuilder(Buffer.from(renderMarkdown(week), 'utf8'), { name: `${stem}.md` }),
     new AttachmentBuilder(pdf, { name: `${stem}.pdf` })
   ];
 }
