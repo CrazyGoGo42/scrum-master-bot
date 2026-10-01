@@ -91,7 +91,8 @@ function readJson<T>(filePath: string, fallback: T): T {
 }
 
 async function writeMeetingHistory(history: MeetingHistory): Promise<void> {
-  meetingWriteQueue = meetingWriteQueue.then(async () => {
+  // Ein fehlgeschlagener Schreibvorgang darf spätere Speicherungen nicht blockieren.
+  meetingWriteQueue = meetingWriteQueue.catch(() => undefined).then(async () => {
     await fs.mkdir(path.dirname(meetingHistoryPath), { recursive: true });
     const temporary = `${meetingHistoryPath}.tmp`;
     await fs.writeFile(temporary, `${JSON.stringify(history, null, 2)}\n`, 'utf8');

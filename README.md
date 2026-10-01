@@ -83,8 +83,10 @@ Falls nach einer Abmeldung später doch ein Daily eingereicht wird, hat das Dail
 | 09:00 | Daily-Runde wird geöffnet |
 | 15:00 | freundliche Erinnerung an Personen ohne Daily oder Abmeldung |
 | 20:00 | zweite Erinnerung, falls weiterhin keine Dokumentation vorliegt |
-| 00:05 | fehlende Dailies / Abmeldungen des abgeschlossenen Arbeitstags werden dokumentiert |
-| Freitag 14:00 | Wochenbericht als Entwurf |
+| 08:05 (Di–Sa) | fehlende Dailies / Abmeldungen des vorherigen Arbeitstags werden dokumentiert |
+| 09:00 (Mo–Sa) | Erinnerung an Arbeitszeiten vom Vortag ohne Ende |
+| Freitag ab 14:00 | alle 30 Minuten Prüfung, ob der Freitag für alle abgeschlossen ist; dann Wochenbericht als Entwurf |
+| Samstag 12:00 | einmaliger Fallback, falls nur noch Freitag-Arbeitszeiten offen sind |
 | regelmäßig | Prüfung, ob eine Push-Erinnerung fällig ist |
 
 Nach **2 Arbeitstagen in Folge ohne Daily oder Abmeldung** dokumentiert der Bot die Inaktivität ausdrücklich im Scrum-Status-Channel. Das ist Projektdokumentation, keine automatische Sanktion.
@@ -124,7 +126,7 @@ Eine falsch konfigurierte Forum-ID eines Teammitglieds legt den restlichen Bot n
 
 ## Wochenbericht
 
-Freitags um **14:00 Uhr** erstellt der Bot automatisch einen Wochenbericht im Wochenbericht-Forum. Grundlage sind die bis zu diesem Zeitpunkt vorhandenen vollständigen Dailies und Abmeldungen der laufenden Woche.
+Freitags ab **14:00 Uhr** prüft der Bot alle 30 Minuten, ob der Freitag für alle abgeschlossen ist (Daily und beendete Arbeitszeit oder Abmeldung), und erstellt dann automatisch einen Wochenbericht im Wochenbericht-Forum. Sind am Samstag um **12:00 Uhr** nur noch Freitag-Arbeitszeiten offen, wird der Bericht trotzdem erstellt; fehlt dagegen ein Daily oder eine Abmeldung, muss der Bericht mit `/wochenbericht erstellen` manuell erzeugt werden.
 
 Der Bericht enthält:
 
@@ -212,6 +214,8 @@ SCRUM_MASTER_CHANNEL_ID=
 SCRUM_INFO_CHANNEL_ID=
 MEETING_CREATE_CHANNEL_ID=
 MEETING_VOICE_CHANNEL_ID=
+TIME_TRACKING_CHANNEL_ID=
+ALFAVIEW_MEETING_URL=
 
 JOLINE_DISCORD_ID=
 JOLINE_DAILY_FORUM_ID=
@@ -221,16 +225,20 @@ DUY_DISCORD_ID=
 DUY_DAILY_FORUM_ID=
 
 TIMEZONE=Europe/Berlin
+TRACKING_START_DATE=2026-09-28
+WEEKLY_REPORT_LOGO_PATH=assets/BIB_Logo_4c1.jpg
 
 DAILY_OPEN_CRON=0 9 * * 1-5
 DAILY_REMINDER_CRON=0 15 * * 1-5
 DAILY_EVENING_REMINDER_CRON=0 20 * * 1-5
-DAILY_MISSING_REPORT_CRON=5 0 * * 2-6
+DAILY_MISSING_REPORT_CRON=5 8 * * 2-6
 
 PUSH_REMINDER_AFTER_HOURS=6
 PUSH_REMINDER_CHECK_CRON=*/10 * * * *
 
-WEEKLY_REPORT_CRON=0 14 * * 5
+WEEKLY_REPORT_CRON=*/30 14-22 * * 5
+WEEKLY_REPORT_RECOVERY_CRON=0 12 * * 6
+WORK_END_REMINDER_CRON=0 9 * * 1-6
 ```
 
 ## Einrichtung
