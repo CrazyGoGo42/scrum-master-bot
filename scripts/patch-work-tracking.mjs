@@ -44,8 +44,14 @@ replaceOnce(
 
 replaceOnce(
   "async function weeklyReportJob() {\n    const thread = await createWeeklyReport();\n    const channel = await getScrumChannel();\n    await channel.send(`📋 **Der Wochenbericht wurde als Entwurf erstellt.**\\nBitte kurz prüfen: <#${thread.id}>`);\n}",
-  "async function weeklyReportJob() {\n    const scans = await weeklyScans();\n    const completion = fridayCompletionStatus(scans.daily.entries, scans.absence.entries);\n    if (!completion.ready) {\n        console.log(`[Weekly] Freitag noch nicht vollständig abgeschlossen: ${completion.missing.join('; ')}`);\n        return;\n    }\n    const forum = await getForum(config.weeklyForumId);\n    const expectedName = `Wochenbericht für Herrn Tepper | ${formatDate()}`;\n    const existingThreads = await allForumThreads(forum);\n    if (existingThreads.some((entry) => entry.name === expectedName)) {\n        console.log('[Weekly] Wochenbericht für heute existiert bereits.');\n        return;\n    }\n    const thread = await createWeeklyReport();\n    const channel = await getScrumChannel();\n    await channel.send(`📋 **Der Wochenbericht wurde als Entwurf erstellt.**\\nBitte kurz prüfen: <#${thread.id}>`);\n}",
+  "async function weeklyReportJob() {\n    const scans = await weeklyScans();\n    const completion = fridayCompletionStatus(scans.daily.entries, scans.absence.entries);\n    if (!completion.ready) {\n        console.log(`[Weekly] Freitag noch nicht vollständig abgeschlossen: ${completion.missing.join('; ')}`);\n        return;\n    }\n    const forum = await getForum(config.weeklyForumId);\n    const existingThreads = await allForumThreads(forum);\n    const weekStart = nowBerlin().startOf('week').startOf('day');\n    const weekEnd = nowBerlin().endOf('week').endOf('day');\n    const reportAlreadyExists = existingThreads.some((entry) => {\n        if (!entry.name.startsWith('Wochenbericht für Herrn Tepper |') || !entry.createdAt) return false;\n        const createdAt = toBerlin(entry.createdAt);\n        return createdAt >= weekStart && createdAt <= weekEnd;\n    });\n    if (reportAlreadyExists) {\n        console.log('[Weekly] Wochenbericht für diese Kalenderwoche existiert bereits.');\n        return;\n    }\n    const thread = await createWeeklyReport();\n    const channel = await getScrumChannel();\n    await channel.send(`📋 **Der Wochenbericht wurde als Entwurf erstellt.**\\nBitte kurz prüfen: <#${thread.id}>`);\n}",
   'Weekly erst nach abgeschlossenem Freitag erstellen'
+);
+
+replaceOnce(
+  "cron.schedule(config.cron.weeklyReport, () => void weeklyReportJob().catch(console.error), { timezone: config.timezone });",
+  "cron.schedule(config.cron.weeklyReport, () => void weeklyReportJob().catch(console.error), { timezone: config.timezone });\n    cron.schedule(config.cron.weeklyReportRecovery, () => void weeklyReportJob().catch(console.error), { timezone: config.timezone });",
+  'Samstags-Recovery für Wochenbericht'
 );
 
 source = source.replace(
