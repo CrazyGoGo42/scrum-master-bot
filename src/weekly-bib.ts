@@ -399,7 +399,7 @@ function renderMarkdown(week: WeekData): string {
 
     if (week.tasks.length > 0) {
       out.push('', '### Aufgaben aus Meetings');
-      out.push(...week.tasks.map((task) => `- **${task.id} · ${memberName(task.ownerId)}:** ${task.title}`));
+      out.push(...week.tasks.map((task) => `- **${task.id}:** ${task.title}`));
     }
   }
 
@@ -935,14 +935,8 @@ function drawMeetings(pdf: Pdf, week: WeekData): void {
     doc.y += 5;
     drawTable(
       pdf,
-      [
-        { title: 'Person', width: GRID_DATE_WIDTH },
-        { title: 'Aufgabe', width: contentWidth(doc) - GRID_DATE_WIDTH }
-      ],
-      week.tasks.map((task) => [
-        { runs: [{ text: memberName(task.ownerId) }] },
-        { runs: [{ text: pdfText(task.title) }] }
-      ])
+      [{ title: 'Aufgabe', width: contentWidth(doc) }],
+      week.tasks.map((task) => [{ runs: [{ text: pdfText(task.title) }] }])
     );
   }
 }
