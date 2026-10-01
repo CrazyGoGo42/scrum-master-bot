@@ -96,6 +96,24 @@ weeklyBibSource = weeklyBibSource
   .replaceAll('workText(session, false)', 'workText(session, false, day)')
   .replaceAll('workText(session, true)', 'workText(session, true, day)');
 
+replaceWeeklyBibRegex(
+  /const doc = new PDFDocument\(\{ size: 'A4', margins:/,
+  "const doc = new PDFDocument({ size: 'A4', bufferPages: true, margins:",
+  'PDF-Seiten puffern'
+);
+
+replaceWeeklyBibRegex(
+  /\s*let page = 1;\s*const footer = \(\) => \{[\s\S]*?\};\s*doc\.on\('pageAdded', \(\) => \{[\s\S]*?\}\);/,
+  '',
+  'rekursiven PDF-Footer entfernen'
+);
+
+replaceWeeklyBibRegex(
+  /\s*footer\(\);\s*doc\.end\(\);/,
+  `\n    const pageRange = doc.bufferedPageRange();\n    for (let pageIndex = pageRange.start; pageIndex < pageRange.start + pageRange.count; pageIndex += 1) {\n        doc.switchToPage(pageIndex);\n        const previousBottomMargin = doc.page.margins.bottom;\n        doc.page.margins.bottom = 0;\n        doc\n          .font('Helvetica')\n          .fontSize(8)\n          .text(\`Hauptprojekt · Wochenbericht · Seite \${pageIndex - pageRange.start + 1} von \${pageRange.count}\`, 54, doc.page.height - 34, {\n            width: 487,\n            align: 'center',\n            lineBreak: false\n          });\n        doc.page.margins.bottom = previousBottomMargin;\n    }\n\n    doc.end();`,
+  'PDF-Footer nachträglich auf alle Seiten schreiben'
+);
+
 await writeFile(weeklyBibFile, weeklyBibSource, 'utf8');
 await writeFile(file, source, 'utf8');
-console.log('[bib-weekly patch] bib-Wochenbericht mit Markdown/PDF und Freitag-Nicht-übermittelt wurde in dist integriert.');
+console.log('[bib-weekly patch] bib-Wochenbericht mit Markdown/PDF, Freitag-Nicht-übermittelt und sicherem Footer wurde in dist integriert.');
