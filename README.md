@@ -86,7 +86,7 @@ Falls nach einer Abmeldung später doch ein Daily eingereicht wird, hat das Dail
 | 08:05 (Di–Sa) | fehlende Dailies / Abmeldungen des vorherigen Arbeitstags werden dokumentiert |
 | 09:00 (Mo–Sa) | Erinnerung an Arbeitszeiten vom Vortag ohne Ende |
 | Freitag ab 14:00 | alle 30 Minuten Prüfung, ob der Freitag für alle abgeschlossen ist; dann Wochenbericht als Entwurf |
-| Samstag 12:00 | einmaliger Fallback, falls nur noch Freitag-Arbeitszeiten offen sind |
+| Samstag 12:00 | Wochenbericht in jedem Fall, falls noch keiner existiert |
 | regelmäßig | Prüfung, ob eine Push-Erinnerung fällig ist |
 
 Nach **2 Arbeitstagen in Folge ohne Daily oder Abmeldung** dokumentiert der Bot die Inaktivität ausdrücklich im Scrum-Status-Channel. Das ist Projektdokumentation, keine automatische Sanktion.
@@ -126,7 +126,7 @@ Eine falsch konfigurierte Forum-ID eines Teammitglieds legt den restlichen Bot n
 
 ## Wochenbericht
 
-Freitags ab **14:00 Uhr** prüft der Bot alle 30 Minuten, ob der Freitag für alle abgeschlossen ist (Daily und beendete Arbeitszeit oder Abmeldung), und erstellt dann automatisch einen Wochenbericht im Wochenbericht-Forum. Sind am Samstag um **12:00 Uhr** nur noch Freitag-Arbeitszeiten offen, wird der Bericht trotzdem erstellt; fehlt dagegen ein Daily oder eine Abmeldung, muss der Bericht mit `/wochenbericht erstellen` manuell erzeugt werden.
+Freitags ab **14:00 Uhr** prüft der Bot alle 30 Minuten, ob der Freitag für alle abgeschlossen ist (Daily und beendete Arbeitszeit oder Abmeldung), und erstellt dann automatisch einen Wochenbericht im Wochenbericht-Forum. Gibt es am Samstag um **12:00 Uhr** noch keinen Bericht für die Woche, wird er in jedem Fall erstellt (Markdown und PDF). Fehlende Dailies, Abmeldungen oder Endzeiten werden darin gekennzeichnet.
 
 Der Bericht enthält:
 

@@ -37,7 +37,7 @@ infoSource = infoSource
   )
   .replaceAll(
     'Wenn eine Freitags-Arbeitszeit wegen Arbeit nach 23:00 Uhr noch offen ist, prüft der Bot **samstags zwischen ungefähr 08:00 und 22:30 Uhr alle 30 Minuten erneut**. Dadurch kann der Wochenbericht nach einem morgendlichen Endzeit-Nachtrag automatisch fertiggestellt werden.',
-    'Wenn am Freitag nur noch Arbeitszeit-Angaben offen oder nicht übermittelt sind, führt der Bot **samstags um 12:00 Uhr einmalig** den Fallback für die abgeschlossene Kalenderwoche aus. Solche Freitag-Arbeitszeiten werden dann im Bericht als **Nicht übermittelt** gekennzeichnet. Fehlt dagegen das Daily bzw. eine gültige Abmeldung, wird kein automatischer Fallback-Bericht erzeugt.'
+    'Ist bis Samstag noch kein Wochenbericht entstanden, erstellt der Bot ihn **samstags um 12:00 Uhr in jedem Fall** (Markdown und PDF). Fehlende Dailies, Abmeldungen oder Endzeiten blockieren ihn dann nicht mehr, sondern werden im Bericht als **keine Angabe** bzw. **Nicht übermittelt** gekennzeichnet.'
   );
 
 await writeFile(infoFile, infoSource, 'utf8');
