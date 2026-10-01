@@ -7,12 +7,8 @@ import {
   Client,
   Events,
   MessageFlags,
-  ModalBuilder,
-  ModalSubmitInteraction,
   SlashCommandBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  ThreadChannel
+  TextChannel
 } from 'discord.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
@@ -20,7 +16,12 @@ import path from 'node:path';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
 
-type SessionProvenance = 'daily' | 'manual-exact' | 'manual-estimated';
+type SessionProvenance = 'daily' | 'clock' | 'manual-exact' | 'manual-estimated';
+
+type PauseInterval = {
+  startAt: string;
+  endAt?: string;
+};
 
 type WorkSession = {
   id: string;
@@ -30,9 +31,11 @@ type WorkSession = {
   startAt: string;
   endAt?: string;
   pauseMinutes: number;
+  pauses?: PauseInterval[];
   provenance: SessionProvenance;
   createdAt: string;
   updatedAt: string;
+  endReminderSentAt?: string;
 };
 
 type WorkState = {
@@ -56,6 +59,7 @@ export type WeeklyCompletionStatus = {
   missing: string[];
 };
 
+const TIME_PANEL_MARKER = '# Scrum-Zeiterfassung';
 const statePath = process.env.WORK_TRACKING_FILE || path.join(process.cwd(), 'data', 'work-sessions.json');
 let statePromise: Promise<WorkState> | undefined;
 let saveQueue = Promise.resolve();
@@ -77,13 +81,22 @@ function freshState(): WorkState {
   return { nextSession: 1, sessions: [] };
 }
 
+function normalizeSession(raw: WorkSession): WorkSession {
+  return {
+    ...raw,
+    pauseMinutes: Number.isFinite(raw.pauseMinutes) ? Math.max(0, Number(raw.pauseMinutes)) : 0,
+    pauses: Array.isArray(raw.pauses) ? raw.pauses : undefined,
+    provenance: raw.provenance ?? 'daily'
+  };
+}
+
 function readStateSync(): WorkState {
   if (!existsSync(statePath)) return freshState();
   try {
     const parsed = JSON.parse(readFileSync(statePath, 'utf8')) as Partial<WorkState>;
     return {
       nextSession: Number.isFinite(parsed.nextSession) ? Number(parsed.nextSession) : 1,
-      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : []
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions.map((entry) => normalizeSession(entry as WorkSession)) : []
     };
   } catch (error) {
     console.error('[Arbeitszeit] Status konnte nicht gelesen werden.', error);
@@ -92,9 +105,7 @@ function readStateSync(): WorkState {
 }
 
 async function loadState(): Promise<WorkState> {
-  if (!statePromise) {
-    statePromise = Promise.resolve(readStateSync());
-  }
+  if (!statePromise) statePromise = Promise.resolve(readStateSync());
   return statePromise;
 }
 
@@ -120,12 +131,32 @@ function sessionDate(date: DateTime): string {
   return date.toISODate() ?? date.toFormat('yyyy-MM-dd');
 }
 
+function openPause(session: WorkSession): PauseInterval | undefined {
+  return session.pauses?.findLast((pause) => !pause.endAt);
+}
+
+function recalculatePauseMinutes(session: WorkSession): number {
+  if (!session.pauses || session.pauses.length === 0) return Math.max(0, session.pauseMinutes ?? 0);
+
+  let minutes = 0;
+  for (const pause of session.pauses) {
+    if (!pause.endAt) continue;
+    const start = parseIso(pause.startAt);
+    const end = parseIso(pause.endAt);
+    if (!start.isValid || !end.isValid || end <= start) continue;
+    minutes += Math.round(end.diff(start, 'minutes').minutes);
+  }
+  session.pauseMinutes = Math.max(0, minutes);
+  return session.pauseMinutes;
+}
+
 function durationMinutes(session: WorkSession): number | undefined {
   if (!session.endAt) return undefined;
   const start = parseIso(session.startAt);
   const end = parseIso(session.endAt);
   if (!start.isValid || !end.isValid) return undefined;
-  return Math.max(0, Math.round(end.diff(start, 'minutes').minutes) - Math.max(0, session.pauseMinutes));
+  const pause = recalculatePauseMinutes(session);
+  return Math.max(0, Math.round(end.diff(start, 'minutes').minutes) - pause);
 }
 
 function durationText(minutes: number): string {
@@ -142,143 +173,225 @@ function provenanceText(session: WorkSession): string {
   return '';
 }
 
-function endButton(session: WorkSession): ActionRowBuilder<ButtonBuilder> {
+function crossesMidnight(session: WorkSession): boolean {
+  if (!session.endAt) return false;
+  return parseIso(session.startAt).toISODate() !== parseIso(session.endAt).toISODate();
+}
+
+function endTimeText(session: WorkSession): string {
+  if (!session.endAt) return '';
+  const end = parseIso(session.endAt);
+  return `${end.toFormat('HH:mm')}${crossesMidnight(session) ? ' (+1 Tag)' : ''}`;
+}
+
+function timePanelRow(): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`work:end:${session.id}`)
-      .setLabel('Arbeit für heute beenden')
-      .setEmoji('🏁')
-      .setStyle(ButtonStyle.Success)
+      .setCustomId('work:clock:start')
+      .setLabel('Start')
+      .setEmoji('▶️')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('work:clock:pause')
+      .setLabel('Pause')
+      .setEmoji('⏸️')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('work:clock:end')
+      .setLabel('Ende')
+      .setEmoji('⏹️')
+      .setStyle(ButtonStyle.Danger)
   );
 }
 
-function pauseInput(defaultValue = '0'): ActionRowBuilder<TextInputBuilder> {
-  return new ActionRowBuilder<TextInputBuilder>().addComponents(
-    new TextInputBuilder()
-      .setCustomId('pause')
-      .setLabel('Pausenzeit in Minuten')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setMaxLength(3)
-      .setValue(defaultValue)
+function resumeRow(sessionId: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`work:clock:resume:${sessionId}`)
+      .setLabel('🟠 Weitermachen')
+      .setStyle(ButtonStyle.Primary)
   );
 }
 
-function endModal(session: WorkSession): ModalBuilder {
-  return new ModalBuilder()
-    .setCustomId(`work:end-modal:${session.id}`)
-    .setTitle('Arbeitstag abschließen')
-    .addComponents(pauseInput(String(session.pauseMinutes ?? 0)));
+async function findAnyOpenSession(userId: string): Promise<WorkSession | undefined> {
+  const state = await loadState();
+  return state.sessions
+    .filter((session) => session.userId === userId && !session.endAt)
+    .sort((a, b) => b.startAt.localeCompare(a.startAt))[0];
 }
 
-async function findOpenSession(userId: string, date = nowBerlin()): Promise<WorkSession | undefined> {
-  const state = await loadState();
-  const key = sessionDate(date);
-  return state.sessions.find((session) => session.userId === userId && session.date === key && !session.endAt);
-}
-
-export async function startWorkSession(thread: ThreadChannel, userId: string): Promise<void> {
-  if (!isTeamMember(userId)) return;
-
-  const state = await loadState();
-  const start = nowBerlin();
-  const date = sessionDate(start);
-  const existing = state.sessions.find((session) => session.userId === userId && session.date === date);
-
-  if (existing) {
-    if (!existing.endAt) {
-      await thread.send({
-        content: `🕒 **Arbeitszeit läuft bereits seit ${parseIso(existing.startAt).toFormat('HH:mm')} Uhr.**`,
-        components: [endButton(existing)],
-        allowedMentions: { parse: [] }
-      }).catch(() => undefined);
-    }
+async function startFromClock(interaction: ButtonInteraction): Promise<void> {
+  if (!isTeamMember(interaction.user.id)) {
+    await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const nowIso = start.toISO() ?? new Date().toISOString();
+  const state = await loadState();
+  const currentOpen = state.sessions
+    .filter((entry) => entry.userId === interaction.user.id && !entry.endAt)
+    .sort((a, b) => b.startAt.localeCompare(a.startAt))[0];
+
+  if (currentOpen) {
+    const start = parseIso(currentOpen.startAt);
+    const paused = Boolean(openPause(currentOpen));
+    await interaction.reply({
+      content:
+        `ℹ️ **Bereits um ${start.toFormat('HH:mm')} Uhr angefangen.**` +
+        (start.toISODate() !== nowBerlin().toISODate() ? `\nDiese Arbeitszeit gehört zum ${start.toFormat('dd.MM.yyyy')} und ist noch offen.` : '') +
+        (paused ? '\nDu bist aktuell in Pause.' : ''),
+      components: paused ? [resumeRow(currentOpen.id)] : [],
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  const now = nowBerlin();
+  const todayKey = sessionDate(now);
+  const completedToday = state.sessions.find(
+    (entry) => entry.userId === interaction.user.id && entry.date === todayKey && Boolean(entry.endAt)
+  );
+  if (completedToday) {
+    await interaction.reply({
+      content: `ℹ️ Dein Arbeitstag für heute wurde bereits um **${endTimeText(completedToday)} Uhr** beendet.`,
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  const nowIso = now.toISO() ?? new Date().toISOString();
   const session: WorkSession = {
     id: nextSessionId(state),
-    userId,
-    date,
-    dailyThreadId: thread.id,
+    userId: interaction.user.id,
+    date: todayKey,
     startAt: nowIso,
     pauseMinutes: 0,
-    provenance: 'daily',
+    pauses: [],
+    provenance: 'clock',
     createdAt: nowIso,
     updatedAt: nowIso
   };
   state.sessions.push(session);
   await saveState(state);
 
-  await thread.send({
-    content:
-      `🕒 **Arbeitszeit gestartet: ${start.toFormat('HH:mm')} Uhr**\n` +
-      `Wenn du für heute fertig bist, beende den Arbeitstag über den Button oder mit **/feierabend**.`,
-    components: [endButton(session)],
-    allowedMentions: { parse: [] }
+  await interaction.reply({
+    content: `🟢 **Arbeitszeit gestartet: ${now.toFormat('HH:mm')} Uhr.**`,
+    flags: MessageFlags.Ephemeral
   });
 }
 
-async function showEndModal(interaction: ChatInputCommandInteraction | ButtonInteraction): Promise<void> {
+async function pauseFromClock(interaction: ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
     await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const session = await findOpenSession(interaction.user.id);
+  const state = await loadState();
+  const session = state.sessions
+    .filter((entry) => entry.userId === interaction.user.id && !entry.endAt)
+    .sort((a, b) => b.startAt.localeCompare(a.startAt))[0];
+
   if (!session) {
+    await interaction.reply({ content: 'ℹ️ Du hast aktuell keine laufende Arbeitszeit. Erst **Start** drücken. 🙂', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const activePause = openPause(session);
+  if (activePause) {
     await interaction.reply({
-      content: 'ℹ️ Für heute läuft keine offene Arbeitszeit. Falls ein alter Tag fehlt, nutze **/arbeitszeit nachtragen**.',
+      content: `⏸️ Du bist bereits seit **${parseIso(activePause.startAt).toFormat('HH:mm')} Uhr** in Pause.`,
+      components: [resumeRow(session.id)],
       flags: MessageFlags.Ephemeral
     });
     return;
   }
 
-  await interaction.showModal(endModal(session));
+  const now = nowBerlin();
+  session.pauses ??= [];
+  session.pauses.push({ startAt: now.toISO() ?? new Date().toISOString() });
+  session.updatedAt = now.toISO() ?? new Date().toISOString();
+  await saveState(state);
+
+  await interaction.reply({
+    content: `⏸️ **Pause gestartet: ${now.toFormat('HH:mm')} Uhr.**\nWenn du wieder da bist, drück **Weitermachen**.`,
+    components: [resumeRow(session.id)],
+    flags: MessageFlags.Ephemeral
+  });
 }
 
-async function finishSession(interaction: ModalSubmitInteraction, sessionId: string): Promise<void> {
+async function resumeFromClock(interaction: ButtonInteraction, sessionId: string): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
     await interaction.reply({ content: '⛔ Keine Berechtigung.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const pause = Number(interaction.fields.getTextInputValue('pause').trim());
-  if (!Number.isInteger(pause) || pause < 0 || pause > 480) {
-    await interaction.reply({ content: '❌ Bitte eine Pausenzeit zwischen 0 und 480 Minuten angeben.', flags: MessageFlags.Ephemeral });
+  const state = await loadState();
+  const session = state.sessions.find((entry) => entry.id === sessionId && entry.userId === interaction.user.id && !entry.endAt);
+  if (!session) {
+    await interaction.reply({ content: 'ℹ️ Diese Arbeitszeit ist nicht mehr offen.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const activePause = openPause(session);
+  if (!activePause) {
+    await interaction.reply({ content: 'ℹ️ Du arbeitest bereits wieder.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const now = nowBerlin();
+  activePause.endAt = now.toISO() ?? new Date().toISOString();
+  recalculatePauseMinutes(session);
+  session.updatedAt = activePause.endAt;
+  await saveState(state);
+
+  await interaction.update({
+    content: `🟠 **Weiter geht’s seit ${now.toFormat('HH:mm')} Uhr.**\nBisherige Pause: ${durationText(session.pauseMinutes)}.`,
+    components: []
+  });
+}
+
+async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonInteraction): Promise<void> {
+  if (!isTeamMember(interaction.user.id)) {
+    await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const state = await loadState();
-  const session = state.sessions.find((entry) => entry.id === sessionId && entry.userId === interaction.user.id);
+  const session = state.sessions
+    .filter((entry) => entry.userId === interaction.user.id && !entry.endAt)
+    .sort((a, b) => b.startAt.localeCompare(a.startAt))[0];
+
   if (!session) {
-    await interaction.reply({ content: '❌ Die Arbeitszeit wurde nicht gefunden.', flags: MessageFlags.Ephemeral });
-    return;
-  }
-  if (session.endAt) {
-    await interaction.reply({ content: 'ℹ️ Dieser Arbeitstag wurde bereits abgeschlossen.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({
+      content: 'ℹ️ Für dich läuft aktuell keine Arbeitszeit. Falls ein vergangener Tag offen ist, nutze **/arbeitszeit nachtragen**.',
+      flags: MessageFlags.Ephemeral
+    });
     return;
   }
 
-  const end = nowBerlin();
   const start = parseIso(session.startAt);
-  const gross = Math.round(end.diff(start, 'minutes').minutes);
-  if (pause >= gross) {
-    await interaction.reply({ content: '❌ Die Pause darf nicht so lang wie die gesamte Arbeitszeit sein.', flags: MessageFlags.Ephemeral });
+  const now = nowBerlin();
+  if (start.toISODate() !== now.toISODate()) {
+    await interaction.reply({
+      content:
+        `⚠️ Deine offene Arbeitszeit stammt vom **${start.toFormat('dd.MM.yyyy')} um ${start.toFormat('HH:mm')} Uhr**. ` +
+        'Damit wir nicht versehentlich die ganze Nacht als Arbeitszeit zählen, trage das tatsächliche Ende bitte mit **/arbeitszeit nachtragen** ein.',
+      flags: MessageFlags.Ephemeral
+    });
     return;
   }
 
-  session.endAt = end.toISO() ?? new Date().toISOString();
-  session.pauseMinutes = pause;
+  const activePause = openPause(session);
+  if (activePause) activePause.endAt = now.toISO() ?? new Date().toISOString();
+  recalculatePauseMinutes(session);
+  session.endAt = now.toISO() ?? new Date().toISOString();
   session.updatedAt = session.endAt;
   await saveState(state);
 
   const net = durationMinutes(session) ?? 0;
   await interaction.reply({
     content:
-      `🏁 **Arbeitstag abgeschlossen.**\n` +
-      `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')} Uhr · Pause ${pause} min · **${durationText(net)} Arbeitszeit**`,
+      `🔴 **Arbeitstag beendet: ${now.toFormat('HH:mm')} Uhr.**\n` +
+      `${start.toFormat('HH:mm')}–${endTimeText(session)} Uhr · Pause ${durationText(session.pauseMinutes)} · **${durationText(net)} Arbeitszeit**`,
     flags: MessageFlags.Ephemeral
   });
 }
@@ -294,24 +407,32 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
     zone: config.timezone,
     locale: 'de'
   });
-  const end = DateTime.fromFormat(`${dateRaw} ${endRaw}`, 'dd.MM.yyyy HH:mm', {
+  let end = DateTime.fromFormat(`${dateRaw} ${endRaw}`, 'dd.MM.yyyy HH:mm', {
     zone: config.timezone,
     locale: 'de'
   });
 
-  if (!start.isValid || !end.isValid || end <= start) {
+  if (!start.isValid || !end.isValid) {
     await interaction.reply({
-      content: '❌ Datum bitte als **TT.MM.JJJJ**, Zeiten als **HH:MM** angeben. Die Endzeit muss nach der Startzeit liegen.',
+      content: '❌ Datum bitte als **TT.MM.JJJJ**, Zeiten als **HH:MM** angeben.',
       flags: MessageFlags.Ephemeral
     });
     return;
   }
-  if (start > nowBerlin()) {
-    await interaction.reply({ content: '❌ Arbeitszeit kann nicht für die Zukunft nachgetragen werden.', flags: MessageFlags.Ephemeral });
+
+  if (end <= start) end = end.plus({ days: 1 });
+
+  const now = nowBerlin();
+  if (start > now || end > now.plus({ minutes: 2 })) {
+    await interaction.reply({ content: '❌ Arbeitszeit kann nicht in der Zukunft liegen.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const gross = Math.round(end.diff(start, 'minutes').minutes);
+  if (gross <= 0 || gross > 36 * 60) {
+    await interaction.reply({ content: '❌ Der Zeitraum muss zwischen 1 Minute und 36 Stunden liegen.', flags: MessageFlags.Ephemeral });
+    return;
+  }
   if (pause < 0 || pause >= gross) {
     await interaction.reply({ content: '❌ Die Pausenzeit ist für diesen Zeitraum ungültig.', flags: MessageFlags.Ephemeral });
     return;
@@ -320,7 +441,7 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
   const state = await loadState();
   const date = sessionDate(start);
   let session = state.sessions.find((entry) => entry.userId === interaction.user.id && entry.date === date);
-  const nowIso = nowBerlin().toISO() ?? new Date().toISOString();
+  const nowIso = now.toISO() ?? new Date().toISOString();
   const provenance: SessionProvenance = quality === 'geschätzt' ? 'manual-estimated' : 'manual-exact';
 
   if (!session) {
@@ -331,6 +452,7 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
       startAt: start.toISO() ?? start.toJSDate().toISOString(),
       endAt: end.toISO() ?? end.toJSDate().toISOString(),
       pauseMinutes: pause,
+      pauses: undefined,
       provenance,
       createdAt: nowIso,
       updatedAt: nowIso
@@ -340,15 +462,19 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
     session.startAt = start.toISO() ?? start.toJSDate().toISOString();
     session.endAt = end.toISO() ?? end.toJSDate().toISOString();
     session.pauseMinutes = pause;
+    session.pauses = undefined;
     session.provenance = provenance;
     session.updatedAt = nowIso;
+    session.endReminderSentAt = undefined;
   }
 
   await saveState(state);
   const net = durationMinutes(session) ?? 0;
+  const overnight = end.toISODate() !== start.toISODate();
   await interaction.reply({
     content:
-      `✅ Arbeitszeit für **${dateRaw}** gespeichert: ${startRaw}–${endRaw} Uhr · Pause ${pause} min · **${durationText(net)}**` +
+      `✅ Arbeitszeit für **${dateRaw}** gespeichert: ${startRaw}–${endRaw}${overnight ? ' Uhr am Folgetag' : ' Uhr'} · ` +
+      `Pause ${pause} min · **${durationText(net)}**` +
       (provenance === 'manual-estimated' ? '\n_Diese Zeit ist ausdrücklich als geschätzt gekennzeichnet._' : ''),
     flags: MessageFlags.Ephemeral
   });
@@ -358,7 +484,7 @@ async function status(interaction: ChatInputCommandInteraction): Promise<void> {
   const state = await loadState();
   const own = state.sessions
     .filter((session) => session.userId === interaction.user.id)
-    .sort((a, b) => b.date.localeCompare(a.date))
+    .sort((a, b) => b.startAt.localeCompare(a.startAt))
     .slice(0, 7);
 
   if (own.length === 0) {
@@ -373,18 +499,83 @@ async function status(interaction: ChatInputCommandInteraction): Promise<void> {
     const start = parseIso(session.startAt);
     const end = session.endAt ? parseIso(session.endAt) : undefined;
     const net = durationMinutes(session);
-    return end && net !== undefined
-      ? `• **${DateTime.fromISO(session.date).toFormat('dd.MM.yyyy')}** · ${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')} · ${durationText(net)}${provenanceText(session)}`
-      : `• **${DateTime.fromISO(session.date).toFormat('dd.MM.yyyy')}** · seit ${start.toFormat('HH:mm')} Uhr · noch offen`;
+    const paused = openPause(session);
+    if (end && net !== undefined) {
+      return `• **${DateTime.fromISO(session.date).toFormat('dd.MM.yyyy')}** · ${start.toFormat('HH:mm')}–${endTimeText(session)} · ${durationText(net)}${provenanceText(session)}`;
+    }
+    return `• **${DateTime.fromISO(session.date).toFormat('dd.MM.yyyy')}** · seit ${start.toFormat('HH:mm')} Uhr · ${paused ? 'Pause' : 'noch offen'}`;
   });
 
   await interaction.reply({ content: `## Deine Arbeitszeiten\n${lines.join('\n')}`, flags: MessageFlags.Ephemeral });
 }
 
+async function ensureTimePanel(client: Client): Promise<void> {
+  const raw = await client.channels.fetch(config.timeTrackingChannelId);
+  if (!(raw instanceof TextChannel)) {
+    console.error(`[Arbeitszeit] Zeiterfassungs-Channel ${config.timeTrackingChannelId} ist kein Text-Channel.`);
+    return;
+  }
+
+  const recent = await raw.messages.fetch({ limit: 50 });
+  const botMessages = recent.filter(
+    (message) => message.author.id === client.user?.id && message.content.startsWith(TIME_PANEL_MARKER)
+  );
+  const existing = botMessages.first();
+  const content =
+    `${TIME_PANEL_MARKER}\n\n` +
+    `**Start** · Arbeitszeit beginnen\n` +
+    `**Pause** · kurze Unterbrechung starten\n` +
+    `**Ende** · Arbeitstag abschließen\n\n` +
+    `_Alle Klicks werden nur dir privat bestätigt. Der Channel selbst bleibt sauber._`;
+
+  if (existing) {
+    await existing.edit({ content, components: [timePanelRow()] });
+  } else {
+    await raw.send({ content, components: [timePanelRow()] });
+  }
+
+  for (const duplicate of botMessages.values()) {
+    if (duplicate.id !== existing?.id) await duplicate.delete().catch(() => undefined);
+  }
+}
+
+async function remindMissingEnds(client: Client): Promise<void> {
+  const state = await loadState();
+  const today = nowBerlin().startOf('day');
+  const todayKey = sessionDate(today);
+  const stale = state.sessions.filter((session) => {
+    if (session.endAt) return false;
+    const start = parseIso(session.startAt);
+    return start.isValid && start.startOf('day') < today && session.endReminderSentAt !== todayKey;
+  });
+  if (stale.length === 0) return;
+
+  const raw = await client.channels.fetch(config.scrumChannelId);
+  if (!(raw instanceof TextChannel)) {
+    console.error('[Arbeitszeit] Scrum-Status-Channel für fehlende Endzeiten nicht erreichbar.');
+    return;
+  }
+
+  for (const session of stale) {
+    const start = parseIso(session.startAt);
+    await raw.send({
+      content:
+        `⏰ <@${session.userId}> **für deine Arbeitszeit vom ${start.toFormat('dd.MM.yyyy')} fehlt noch das Ende.**\n` +
+        `Start war um **${start.toFormat('HH:mm')} Uhr**. Bitte trage das tatsächliche Ende mit **/arbeitszeit nachtragen** nach. ` +
+        `Wenn du nach Mitternacht aufgehört hast, gib einfach z. B. Start \`20:00\` und Ende \`01:15\` an. Der Bot versteht das Ende dann als Folgetag.`,
+      allowedMentions: { users: [session.userId] }
+    });
+    session.endReminderSentAt = todayKey;
+    session.updatedAt = nowBerlin().toISO() ?? new Date().toISOString();
+  }
+
+  await saveState(state);
+}
+
 export const workTrackingCommands = [
   new SlashCommandBuilder()
     .setName('feierabend')
-    .setDescription('Beendet deine heutige Arbeitszeit'),
+    .setDescription('Beendet deine aktuell laufende Arbeitszeit'),
   new SlashCommandBuilder()
     .setName('arbeitszeit')
     .setDescription('Arbeitszeiten anzeigen oder nachtragen')
@@ -392,11 +583,11 @@ export const workTrackingCommands = [
     .addSubcommand((sub) =>
       sub
         .setName('nachtragen')
-        .setDescription('Trägt eine vergangene Arbeitszeit nach')
-        .addStringOption((option) => option.setName('datum').setDescription('TT.MM.JJJJ').setRequired(true).setMaxLength(10))
-        .addStringOption((option) => option.setName('start').setDescription('HH:MM').setRequired(true).setMaxLength(5))
-        .addStringOption((option) => option.setName('ende').setDescription('HH:MM').setRequired(true).setMaxLength(5))
-        .addIntegerOption((option) => option.setName('pause').setDescription('Pause in Minuten').setMinValue(0).setMaxValue(480))
+        .setDescription('Trägt eine vergangene Arbeitszeit nach, auch über Mitternacht')
+        .addStringOption((option) => option.setName('datum').setDescription('Startdatum TT.MM.JJJJ').setRequired(true).setMaxLength(10))
+        .addStringOption((option) => option.setName('start').setDescription('Start HH:MM').setRequired(true).setMaxLength(5))
+        .addStringOption((option) => option.setName('ende').setDescription('Ende HH:MM; kleinere Uhrzeit = Folgetag').setRequired(true).setMaxLength(5))
+        .addIntegerOption((option) => option.setName('pause').setDescription('Gesamte Pause in Minuten').setMinValue(0).setMaxValue(720))
         .addStringOption((option) =>
           option
             .setName('qualität')
@@ -441,11 +632,10 @@ export function weeklyWorkTrackingSection(dailies: DailyForWorkReport[], date = 
 
       if (session?.endAt) {
         const start = parseIso(session.startAt);
-        const end = parseIso(session.endAt);
         const net = durationMinutes(session) ?? 0;
         total += net;
         out.push(
-          `- **${label}:** ${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')} Uhr · Pause ${session.pauseMinutes} min · ${durationText(net)}${provenanceText(session)}`
+          `- **${label}:** ${start.toFormat('HH:mm')}–${endTimeText(session)} Uhr · Pause ${session.pauseMinutes} min · ${durationText(net)}${provenanceText(session)}`
         );
       } else if (session) {
         out.push(`- **${label}:** seit ${parseIso(session.startAt).toFormat('HH:mm')} Uhr · Arbeitstag noch nicht abgeschlossen`);
@@ -491,7 +681,7 @@ export function fridayCompletionStatus(
     }
 
     const session = state.sessions.find((entry) => entry.userId === member.discordId && entry.date === fridayKey);
-    if (!session?.endAt) missing.push(`${member.name}: Arbeitstag noch nicht abgeschlossen`);
+    if (!session?.endAt) missing.push(`${member.name}: Arbeitszeit noch nicht beendet`);
   }
 
   return { ready: missing.length === 0, missing };
@@ -501,10 +691,15 @@ export function installWorkTracking(client: Client): void {
   if (installed) return;
   installed = true;
 
+  client.once(Events.ClientReady, () => {
+    void ensureTimePanel(client).catch((error) => console.error('[Arbeitszeit] Zeiterfassungs-Panel konnte nicht veröffentlicht werden.', error));
+    void remindMissingEnds(client).catch((error) => console.error('[Arbeitszeit] Fehlende Endzeiten konnten nicht geprüft werden.', error));
+  });
+
   client.on(Events.InteractionCreate, (interaction) => {
     void (async () => {
       if (interaction.isChatInputCommand() && interaction.commandName === 'feierabend') {
-        await showEndModal(interaction);
+        await endOpenSession(interaction);
         return;
       }
 
@@ -519,14 +714,20 @@ export function installWorkTracking(client: Client): void {
         return;
       }
 
-      if (interaction.isButton() && interaction.customId.startsWith('work:end:')) {
-        await showEndModal(interaction);
+      if (interaction.isButton() && interaction.customId === 'work:clock:start') {
+        await startFromClock(interaction);
         return;
       }
-
-      if (interaction.isModalSubmit() && interaction.customId.startsWith('work:end-modal:')) {
-        const sessionId = interaction.customId.slice('work:end-modal:'.length);
-        await finishSession(interaction, sessionId);
+      if (interaction.isButton() && interaction.customId === 'work:clock:pause') {
+        await pauseFromClock(interaction);
+        return;
+      }
+      if (interaction.isButton() && interaction.customId === 'work:clock:end') {
+        await endOpenSession(interaction);
+        return;
+      }
+      if (interaction.isButton() && interaction.customId.startsWith('work:clock:resume:')) {
+        await resumeFromClock(interaction, interaction.customId.slice('work:clock:resume:'.length));
       }
     })().catch((error) => console.error('[Arbeitszeit] Interaction-Fehler', error));
   });
