@@ -31,7 +31,8 @@ export const config = {
     dailyEveningReminder: process.env.DAILY_EVENING_REMINDER_CRON || '0 20 * * 1-5',
     dailyMissingReport: process.env.DAILY_MISSING_REPORT_CRON || '5 8 * * 2-6',
     pushReminderCheck: process.env.PUSH_REMINDER_CHECK_CRON || '*/10 * * * *',
-    weeklyReport: process.env.WEEKLY_REPORT_CRON || '*/30 14-22 * * 5'
+    weeklyReport: process.env.WEEKLY_REPORT_CRON || '*/30 14-22 * * 5',
+    weeklyReportRecovery: process.env.WEEKLY_REPORT_RECOVERY_CRON || '*/30 8-22 * * 6'
   },
   members: [
     {
