@@ -14,7 +14,7 @@ function replaceOnce(search, replacement, label) {
 
 replaceOnce(
   "import { config } from './config.js';\n",
-  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, externalMeetingLinkModal, hasMeetingVenue, meetingLocationRow, meetingVenueChoiceRow, meetingVenueContinueRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, offerDailyTasks, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\nimport { recordMeeting, weeklyProjectReportSection } from './weekly-project.js';\nimport { installMeetingBackfill, meetingBackfillCommand } from './meeting-backfill.js';\n",
+  "import { config } from './config.js';\nimport { consumeMeetingVenue, createScheduledMeeting, externalMeetingLinkModal, hasMeetingVenue, meetingLocationRow, meetingVenueChoiceRow, meetingVenueContinueRow, meetingVenueText, selectMeetingVenue } from './meeting-venues.js';\nimport { installProjectTools, meetingActionRow, openBlockersSummary, projectCommands, projectToolsInfoText, trackDailyBlockers, weeklyMarkdownAttachment } from './project-tools.js';\nimport { recordMeeting, weeklyProjectReportSection } from './weekly-project.js';\nimport { installMeetingBackfill, meetingBackfillCommand } from './meeting-backfill.js';\n",
   'Imports'
 );
 
@@ -40,12 +40,6 @@ replaceOnce(
   "    await publishBotInfo().catch((error) => console.error('Bot-Info konnte nicht veröffentlicht werden.', error));\n",
   '',
   'Keine automatische Bot-Info beim Start'
-);
-
-replaceOnce(
-  ".addSubcommand((sub) => sub.setName('freigeben').setDescription('Markiert den neuesten Wochenbericht als freigegeben')),",
-  ".addSubcommand((sub) => sub.setName('freigeben').setDescription('Markiert den neuesten Wochenbericht als freigegeben'))\n        .addSubcommand((sub) => sub.setName('export').setDescription('Exportiert den aktuellen Wochenbericht als Markdown-Datei')),",
-  'Wochenbericht Export Command'
 );
 
 replaceOnce(
@@ -115,8 +109,8 @@ replaceOnce(
 
 replaceOnce(
   "        if (sub === 'erstellen') {",
-  "        if (sub === 'export') {\n            await interaction.deferReply({ flags: MessageFlags.Ephemeral });\n            const scans = await weeklyScans();\n            const report = buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n            await interaction.editReply({\n                content: '📄 Wochenbericht als Markdown-Datei:',\n                files: [weeklyMarkdownAttachment(report)]\n            });\n            return;\n        }\n\n        if (sub === 'erstellen') {",
-  'Wochenbericht Export Handler'
+  "        if (sub === 'vorschau') {\n            await interaction.deferReply({ flags: MessageFlags.Ephemeral });\n            const scans = await weeklyScans();\n            const report = buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n            await interaction.editReply({\n                content: '📄 Wochenbericht als Markdown-Datei:',\n                files: [weeklyMarkdownAttachment(report)]\n            });\n            return;\n        }\n\n        if (sub === 'erstellen') {",
+  'Wochenbericht Vorschau als Dateien'
 );
 
 replaceOnce(
@@ -163,13 +157,13 @@ replaceOnce(
 
 replaceOnce(
   "            const thread = await createDailyFromDraft(draft);\n            await cancelActiveAbsenceIfPresent(interaction.user.id);",
-  "            const thread = await createDailyFromDraft(draft);\n            await trackDailyBlockers(interaction.user.id, draft.blocker ?? 'Keine', thread.id).catch((error) =>\n                console.error('[Projekttools] Daily-Blocker konnten nicht übernommen werden.', error)\n            );\n            await offerDailyTasks(thread, interaction.user.id, draft.today ?? '').catch((error) =>\n                console.error('[Projekttools] Daily-Aufgaben-Angebot konnte nicht erstellt werden.', error)\n            );\n            await cancelActiveAbsenceIfPresent(interaction.user.id);",
-  'Daily Aufgaben und Blocker'
+  "            const thread = await createDailyFromDraft(draft);\n            await trackDailyBlockers(interaction.user.id, draft.blocker ?? 'Keine', thread.id).catch((error) =>\n                console.error('[Projekttools] Daily-Blocker konnten nicht übernommen werden.', error)\n            );\n            await cancelActiveAbsenceIfPresent(interaction.user.id);",
+  'Daily-Blocker übernehmen'
 );
 
 replaceOnce(
   '    if (interaction.isChatInputCommand())\n        void handleCommand(interaction).catch(console.error);',
-  "    if (interaction.isChatInputCommand() && !['task', 'blocker', 'entscheidung', 'meeting-nachtragen'].includes(interaction.commandName))\n        void handleCommand(interaction).catch(console.error);",
+  "    if (interaction.isChatInputCommand() && !['blocker', 'entscheidung', 'meeting-nachtragen'].includes(interaction.commandName))\n        void handleCommand(interaction).catch(console.error);",
   'Doppelte Command-Verarbeitung verhindern'
 );
 

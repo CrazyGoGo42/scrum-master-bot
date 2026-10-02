@@ -195,17 +195,16 @@ Die vollständige, sortierte Übersicht für das Team steht auf der Info-Seite (
 
 - `/daily` – Daily oder Abmeldung für den Arbeitstag starten
 - `/daily-bearbeiten` – heutiges Daily korrigieren
-- `/arbeitszeit status` / `/arbeitszeit nachtragen` – Arbeitszeiten ansehen oder nachtragen (Start/Pause/Ende per Buttons im Zeiterfassungs-Channel)
+- `/arbeitszeit woche` / `/arbeitszeit nachtragen` – eigene Wochenstunden ansehen oder Zeiten nachtragen (Start/Pause/Ende per Buttons im Zeiterfassungs-Channel)
 - `/blocker add` / `offen` / `bearbeiten` / `lösen` – Blocker verwalten
 - `/entscheidung add` / `liste` / `löschen` – Projektentscheidungen dokumentieren oder entfernen
 - `/meeting` – neues Meeting erstellen, nur im Meeting-Erstellen-Channel
 - `/meeting-nachtragen` – vergangenes Meeting dokumentieren
-- `/wochenbericht vorschau` / `erstellen` / `freigeben` / `export` – Wochenbericht
-- `/task add` / `board` / `meine` / `move` / `fortschritt` / `löschen` – freiwilliges Aufgabenboard
+- `/wochenbericht vorschau` – aktuellen Bericht privat als PDF und Markdown ansehen
+- `/wochenbericht erstellen` – Bericht sofort im Wochenbericht-Forum anlegen
 - `/scrum status` – heutigen Daily-/Abmeldestatus anzeigen
 - `/status` – Bot- und Channel-Konfiguration prüfen
 - `/info` – Info-Seite im Info-Channel veröffentlichen
-- `/test` – geplante Bot-Aktionen manuell testen, nur mit `Server verwalten`
 
 ## Benötigte Umgebungsvariablen
 

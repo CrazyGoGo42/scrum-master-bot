@@ -10,11 +10,9 @@ import {
   Events,
   ForumChannel,
   GatewayIntentBits,
-  GuildMember,
   MessageFlags,
   ModalBuilder,
   ModalSubmitInteraction,
-  PermissionFlagsBits,
   SlashCommandBuilder,
   TextChannel,
   TextInputBuilder,
@@ -1339,34 +1337,15 @@ const commands = [
   new SlashCommandBuilder()
     .setName('wochenbericht')
     .setDescription('Wochenbericht verwalten')
-    .addSubcommand((sub) => sub.setName('vorschau').setDescription('Zeigt eine Vorschau des aktuellen Wochenberichts'))
-    .addSubcommand((sub) => sub.setName('erstellen').setDescription('Erstellt den Wochenbericht jetzt'))
-    .addSubcommand((sub) => sub.setName('freigeben').setDescription('Markiert den neuesten Wochenbericht als freigegeben')),
+    .addSubcommand((sub) => sub.setName('vorschau').setDescription('Zeigt dir den aktuellen Wochenbericht privat als PDF und Markdown'))
+    .addSubcommand((sub) => sub.setName('erstellen').setDescription('Erstellt den Wochenbericht jetzt im Wochenbericht-Forum')),
   new SlashCommandBuilder()
     .setName('bot')
     .setDescription('Bot-Funktionen')
     .addSubcommand((sub) => sub.setName('status').setDescription('Zeigt den Bot-Status'))
     .addSubcommand((sub) => sub.setName('info').setDescription('Aktualisiert die öffentliche Bot-Übersicht im Info-Channel'))
     .addSubcommand((sub) => sub.setName('struktur').setDescription('Zeigt dir privat die Daily-Scrum-Vorlage zum Kopieren'))
-    .addSubcommand((sub) => sub.setName('meeting').setDescription('Erstellt ein neues Meeting im Meeting-Channel')),
-  new SlashCommandBuilder()
-    .setName('test')
-    .setDescription('Testet geplante Bot-Aktionen')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addStringOption((option) =>
-      option
-        .setName('aktion')
-        .setDescription('Welche Aktion soll getestet werden?')
-        .setRequired(true)
-        .addChoices(
-          { name: 'Daily Start', value: 'daily-start' },
-          { name: 'Daily Reminder', value: 'daily-reminder' },
-          { name: 'Daily Evening Reminder', value: 'daily-evening-reminder' },
-          { name: 'Missing Daily Report', value: 'missing-daily-report' },
-          { name: 'Push Reminder Check', value: 'push-reminder-check' },
-          { name: 'Weekly Report', value: 'weekly-report' }
-        )
-    )
+    .addSubcommand((sub) => sub.setName('meeting').setDescription('Erstellt ein neues Meeting im Meeting-Channel'))
 ].map((command) => command.toJSON());
 
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1452,62 +1431,12 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
   if (interaction.commandName === 'wochenbericht') {
     const sub = interaction.options.getSubcommand();
 
-    if (sub === 'vorschau') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const scans = await weeklyScans();
-      const chunks = splitDiscordText(
-        buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds)
-      );
-      await interaction.editReply(chunks[0]);
-      for (const chunk of chunks.slice(1)) await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
-      return;
-    }
-
     if (sub === 'erstellen') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const thread = await createWeeklyReport();
       await interaction.editReply(`Wochenbericht erstellt: <#${thread.id}>`);
       return;
     }
-
-    if (sub === 'freigeben') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const forum = await getForum(config.weeklyForumId);
-      const threads = await allForumThreads(forum);
-      const newest = threads
-        .filter((thread) => thread.createdTimestamp)
-        .sort((a, b) => (b.createdTimestamp ?? 0) - (a.createdTimestamp ?? 0))[0];
-
-      if (!newest) {
-        await interaction.editReply('Kein Wochenbericht gefunden.');
-        return;
-      }
-
-      await newest.send(`✅ **Freigegeben von ${interaction.user} am ${formatDate()}**`);
-      await interaction.editReply(`Wochenbericht freigegeben: <#${newest.id}>`);
-      return;
-    }
-  }
-
-  if (interaction.commandName === 'test') {
-    const member = interaction.member as GuildMember | null;
-    if (!member?.permissions.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.reply({
-        content: 'Dafür brauchst du zusätzlich die Berechtigung „Server verwalten“.',
-        flags: MessageFlags.Ephemeral
-      });
-      return;
-    }
-
-    const action = interaction.options.getString('aktion', true);
-    await interaction.reply({ content: `Teste **${action}** …`, flags: MessageFlags.Ephemeral });
-
-    if (action === 'daily-start') await sendDailyOpen();
-    if (action === 'daily-reminder') await sendDailyReminder(false);
-    if (action === 'daily-evening-reminder') await sendDailyReminder(true);
-    if (action === 'missing-daily-report') await reportMissingDailies();
-    if (action === 'push-reminder-check') await sendDelayedPushReminders();
-    if (action === 'weekly-report') await weeklyReportJob();
   }
 }
 

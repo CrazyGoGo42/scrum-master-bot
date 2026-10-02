@@ -14,8 +14,7 @@ import {
   ModalSubmitInteraction,
   SlashCommandBuilder,
   TextInputBuilder,
-  TextInputStyle,
-  ThreadChannel
+  TextInputStyle
 } from 'discord.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -180,70 +179,6 @@ function meetingNoteId(state: ProjectState): string {
   return `M-${String(state.nextMeetingNote++).padStart(3, '0')}`;
 }
 
-function progressBar(progress: number): string {
-  const safe = Math.max(0, Math.min(100, Math.round(progress)));
-  const filled = Math.round(safe / 5);
-  return `${'█'.repeat(filled)}${'░'.repeat(20 - filled)} ${safe}%`;
-}
-
-function statusLabel(status: TaskStatus): string {
-  if (status === 'todo') return '📝 To Do';
-  if (status === 'doing') return '🔨 Doing';
-  return '✅ Done';
-}
-
-function taskLine(task: ProjectTask, blockers: ProjectBlocker[]): string {
-  const progress = typeof task.progress === 'number' ? ` · ${task.progress}%` : '';
-  const blocked = blockers.some((blocker) => blocker.status === 'open' && blocker.taskId === task.id) ? ' · 🧱 blockiert' : '';
-  return `• **${task.id}** ${task.title} · ${memberName(task.ownerId)}${progress}${blocked}`;
-}
-
-function renderTasks(tasks: ProjectTask[], blockers: ProjectBlocker[]): string {
-  const sections: string[] = ['# Aufgabenboard', '_Freiwillige Planungshilfe. Das Board ist keine zusätzliche Daily-Pflicht._'];
-
-  for (const status of ['todo', 'doing', 'done'] as TaskStatus[]) {
-    const matching = tasks.filter((task) => task.status === status);
-    sections.push('', `## ${statusLabel(status)} · ${matching.length}`);
-    if (matching.length === 0) {
-      sections.push('- Keine Aufgaben.');
-      continue;
-    }
-
-    const visible = matching.slice(-15);
-    sections.push(...visible.map((task) => taskLine(task, blockers)));
-    if (matching.length > visible.length) sections.push(`- … ${matching.length - visible.length} weitere`);
-  }
-
-  return sections.join('\n');
-}
-
-function renderMyTasks(tasks: ProjectTask[], blockers: ProjectBlocker[], ownerId: string): string {
-  const own = tasks.filter((task) => task.ownerId === ownerId && task.status !== 'done');
-  if (own.length === 0) return 'Du hast aktuell keine offenen Aufgaben im freiwilligen Board.';
-
-  return [
-    `# Offene Aufgaben · ${memberName(ownerId)}`,
-    ...own.map((task) => {
-      const bar = typeof task.progress === 'number' && task.status === 'doing' ? `\n  ${progressBar(task.progress)}` : '';
-      return `${taskLine(task, blockers)}${bar}`;
-    })
-  ].join('\n');
-}
-
-function dailyTaskRow(ownerId: string): ActionRowBuilder<ButtonBuilder> {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`project:daily-tasks:add:${ownerId}`)
-      .setLabel('Ins Board übernehmen')
-      .setEmoji('➕')
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId(`project:daily-tasks:skip:${ownerId}`)
-      .setLabel('Nur Daily')
-      .setStyle(ButtonStyle.Secondary)
-  );
-}
-
 export function meetingActionRow(): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -358,20 +293,6 @@ async function addDecision(
   state.decisions.push(entry);
   await saveState(state);
   return entry;
-}
-
-export async function offerDailyTasks(thread: ThreadChannel, ownerId: string, todayText: string): Promise<void> {
-  const tasks = textLines(todayText);
-  if (tasks.length === 0) return;
-
-  await thread.send({
-    content:
-      `📋 **Freiwilliges Aufgabenboard**\n` +
-      `Möchtest du deine heutigen Vorhaben als **Doing** übernehmen? Das ist nur eine Planungshilfe und **keine Pflicht**.\n\n` +
-      tasks.map((task) => `• ${task}`).join('\n'),
-    components: [dailyTaskRow(ownerId)],
-    allowedMentions: { parse: [] }
-  });
 }
 
 const NO_BLOCKER = new Set(['keine', 'keine blocker', 'nichts', 'aktuell keine', '-']);
@@ -532,57 +453,6 @@ export function projectToolsInfoText(): string {
 
 export const projectCommands = [
   new SlashCommandBuilder()
-    .setName('task')
-    .setDescription('Freiwilliges To-Do / Doing / Done Board')
-    .addSubcommand((sub) =>
-      sub
-        .setName('add')
-        .setDescription('Fügt freiwillig eine Aufgabe hinzu')
-        .addStringOption((option) => option.setName('titel').setDescription('Aufgabe').setRequired(true).setMaxLength(200))
-        .addStringOption((option) =>
-          option
-            .setName('status')
-            .setDescription('Startstatus')
-            .addChoices(
-              { name: 'To Do', value: 'todo' },
-              { name: 'Doing', value: 'doing' },
-              { name: 'Done', value: 'done' }
-            )
-        )
-    )
-    .addSubcommand((sub) => sub.setName('board').setDescription('Zeigt das Aufgabenboard'))
-    .addSubcommand((sub) => sub.setName('meine').setDescription('Zeigt deine offenen Aufgaben'))
-    .addSubcommand((sub) =>
-      sub
-        .setName('move')
-        .setDescription('Verschiebt deine Aufgabe')
-        .addStringOption((option) => option.setName('id').setDescription('z. B. T-001').setRequired(true))
-        .addStringOption((option) =>
-          option
-            .setName('status')
-            .setDescription('Neuer Status')
-            .setRequired(true)
-            .addChoices(
-              { name: 'To Do', value: 'todo' },
-              { name: 'Doing', value: 'doing' },
-              { name: 'Done', value: 'done' }
-            )
-        )
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('fortschritt')
-        .setDescription('Setzt freiwillig den Fortschritt deiner Aufgabe')
-        .addStringOption((option) => option.setName('id').setDescription('z. B. T-001').setRequired(true))
-        .addIntegerOption((option) => option.setName('prozent').setDescription('0 bis 100').setRequired(true).setMinValue(0).setMaxValue(100))
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('löschen')
-        .setDescription('Löscht deine Aufgabe aus dem freiwilligen Board')
-        .addStringOption((option) => option.setName('id').setDescription('z. B. T-001').setRequired(true))
-    ),
-  new SlashCommandBuilder()
     .setName('blocker')
     .setDescription('Blocker nachverfolgen')
     .addSubcommand((sub) =>
@@ -590,7 +460,6 @@ export const projectCommands = [
         .setName('add')
         .setDescription('Erfasst einen offenen Blocker')
         .addStringOption((option) => option.setName('text').setDescription('Was blockiert dich?').setRequired(true).setMaxLength(500))
-        .addStringOption((option) => option.setName('aufgabe').setDescription('Optional: Task-ID, z. B. T-001'))
     )
     .addSubcommand((sub) => sub.setName('offen').setDescription('Zeigt offene Blocker'))
     .addSubcommand((sub) =>
@@ -635,92 +504,18 @@ async function requireTeam(interaction: ChatInputCommandInteraction | ButtonInte
   return false;
 }
 
-async function handleTaskCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  const state = await loadState();
-  const sub = interaction.options.getSubcommand();
-
-  if (sub === 'add') {
-    const title = interaction.options.getString('titel', true).trim();
-    const status = (interaction.options.getString('status') ?? 'todo') as TaskStatus;
-    const task = await addTask(interaction.user.id, title, status, 'manual');
-    await interaction.reply({ content: `✅ **${task.id}** wurde als **${statusLabel(task.status)}** angelegt.`, flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (sub === 'board') {
-    await interaction.reply({ content: renderTasks(state.tasks, state.blockers).slice(0, 1900), flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (sub === 'meine') {
-    await interaction.reply({ content: renderMyTasks(state.tasks, state.blockers, interaction.user.id).slice(0, 1900), flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  const id = interaction.options.getString('id', true).toUpperCase();
-  const task = state.tasks.find((entry) => entry.id.toUpperCase() === id);
-  if (!task || task.ownerId !== interaction.user.id) {
-    await interaction.reply({ content: '❌ Diese Aufgabe gehört dir nicht oder wurde nicht gefunden.', flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (sub === 'move') {
-    const status = interaction.options.getString('status', true) as TaskStatus;
-    task.status = status;
-    if (status === 'done') task.progress = 100;
-    else if (task.progress === 100) task.progress = undefined;
-    task.updatedAt = nowIso();
-    await saveState(state);
-    await interaction.reply({ content: `✅ **${task.id}** ist jetzt **${statusLabel(status)}**.`, flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (sub === 'fortschritt') {
-    const progress = interaction.options.getInteger('prozent', true);
-    task.progress = progress;
-    if (progress === 100) task.status = 'done';
-    else if (progress > 0 && task.status === 'todo') task.status = 'doing';
-    task.updatedAt = nowIso();
-    await saveState(state);
-    await interaction.reply({
-      content: `📊 **${task.id}** · ${progressBar(progress)} · ${statusLabel(task.status)}`,
-      flags: MessageFlags.Ephemeral
-    });
-    return;
-  }
-
-  if (sub === 'löschen') {
-    state.tasks = state.tasks.filter((entry) => entry.id !== task.id);
-    state.blockers.forEach((blocker) => {
-      if (blocker.taskId === task.id) blocker.taskId = undefined;
-    });
-    await saveState(state);
-    await interaction.reply({ content: `🗑️ **${task.id}** wurde aus dem freiwilligen Board entfernt.`, flags: MessageFlags.Ephemeral });
-  }
-}
-
 async function handleBlockerCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const state = await loadState();
   const sub = interaction.options.getSubcommand();
 
   if (sub === 'add') {
     const text = interaction.options.getString('text', true).trim();
-    const requestedTask = interaction.options.getString('aufgabe')?.toUpperCase();
-    let linkedTask: ProjectTask | undefined;
-    if (requestedTask) {
-      linkedTask = state.tasks.find((task) => task.id.toUpperCase() === requestedTask && task.ownerId === interaction.user.id);
-      if (!linkedTask) {
-        await interaction.reply({ content: '❌ Die angegebene Aufgabe wurde nicht gefunden oder gehört dir nicht.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-    }
 
     const blocker: ProjectBlocker = {
       id: blockerId(state),
       text,
       ownerId: interaction.user.id,
       status: 'open',
-      taskId: linkedTask?.id,
       source: 'manual',
       createdAt: nowIso()
     };
@@ -798,75 +593,6 @@ async function handleDecisionCommand(interaction: ChatInputCommandInteraction): 
   await interaction.reply({ content: `# Entscheidungslog\n${text}`.slice(0, 1900), flags: MessageFlags.Ephemeral });
 }
 
-function dailySection(content: string, heading: string): string[] {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = content.match(new RegExp(`(?:^|\\n)#{1,3}\\s*${escaped}\\s*\\n([\\s\\S]*?)(?=\\n#{1,3}\\s|$)`, 'i'));
-  return match ? textLines(match[1]) : [];
-}
-
-async function handleDailyTaskButton(interaction: ButtonInteraction): Promise<void> {
-  const parts = interaction.customId.split(':');
-  const action = parts[2];
-  const ownerId = parts[3];
-  if (!ownerId || ownerId !== interaction.user.id) {
-    await interaction.reply({ content: 'Nur die Person dieses Dailys kann diese Auswahl treffen.', flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  if (action === 'skip') {
-    await interaction.update({ content: '📋 Aufgabenboard übersprungen. Dein Daily bleibt natürlich vollständig gültig.', components: [] });
-    return;
-  }
-
-  if (!interaction.channel?.isThread()) {
-    await interaction.reply({ content: '❌ Der Daily-Thread konnte nicht erkannt werden.', flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  const state = await loadState();
-  if (state.dailyImports.includes(interaction.channel.id)) {
-    await interaction.update({ content: '✅ Die Daily-Aufgaben wurden bereits ins Board übernommen.', components: [] });
-    return;
-  }
-
-  const starter = await interaction.channel.fetchStarterMessage();
-  const today = starter ? dailySection(starter.content, 'Heute') : [];
-  if (today.length === 0) {
-    await interaction.update({ content: '❌ Im Daily wurden keine übernehmbaren Aufgaben gefunden.', components: [] });
-    return;
-  }
-
-  const created: ProjectTask[] = [];
-  for (const title of today) {
-    const duplicate = state.tasks.some(
-      (task) => task.ownerId === ownerId && task.status !== 'done' && normalize(task.title) === normalize(title)
-    );
-    if (duplicate) continue;
-    const now = nowIso();
-    const task: ProjectTask = {
-      id: taskId(state),
-      title,
-      ownerId,
-      status: 'doing',
-      source: 'daily',
-      createdAt: now,
-      updatedAt: now,
-      dailyThreadId: interaction.channel.id
-    };
-    state.tasks.push(task);
-    created.push(task);
-  }
-
-  state.dailyImports.push(interaction.channel.id);
-  await saveState(state);
-  await interaction.update({
-    content: created.length
-      ? `✅ ${created.length} Daily-${created.length === 1 ? 'Aufgabe wurde' : 'Aufgaben wurden'} freiwillig als **Doing** übernommen: ${created.map((task) => task.id).join(', ')}`
-      : '✅ Keine neuen Aufgaben nötig. Gleiche offene Aufgaben waren bereits im Board.',
-    components: []
-  });
-}
-
 async function handleMeetingButton(interaction: ButtonInteraction): Promise<void> {
   if (interaction.customId === 'project:meeting:protocol') {
     await interaction.showModal(meetingProtocolModal(interaction.message.id));
@@ -935,9 +661,8 @@ export function installProjectTools(client: Client): void {
 
   client.on(Events.InteractionCreate, (interaction) => {
     void (async () => {
-      if (interaction.isChatInputCommand() && ['task', 'blocker', 'entscheidung'].includes(interaction.commandName)) {
+      if (interaction.isChatInputCommand() && ['blocker', 'entscheidung'].includes(interaction.commandName)) {
         if (!(await requireTeam(interaction))) return;
-        if (interaction.commandName === 'task') await handleTaskCommand(interaction);
         if (interaction.commandName === 'blocker') await handleBlockerCommand(interaction);
         if (interaction.commandName === 'entscheidung') await handleDecisionCommand(interaction);
         return;
@@ -945,8 +670,7 @@ export function installProjectTools(client: Client): void {
 
       if (interaction.isButton() && interaction.customId.startsWith('project:')) {
         if (!(await requireTeam(interaction))) return;
-        if (interaction.customId.startsWith('project:daily-tasks:')) await handleDailyTaskButton(interaction);
-        else if (interaction.customId.startsWith('project:meeting:')) await handleMeetingButton(interaction);
+        if (interaction.customId.startsWith('project:meeting:')) await handleMeetingButton(interaction);
         return;
       }
 

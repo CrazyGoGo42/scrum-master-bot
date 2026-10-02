@@ -56,8 +56,8 @@ patchCreateWeeklyReport();
 
 replaceOnce(
   "            const report = buildWeeklyReport(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n            await interaction.editReply({\n                content: '📄 Wochenbericht als Markdown-Datei:',\n                files: [weeklyMarkdownAttachment(report)]\n            });",
-  "            const attachments = await weeklyReportAttachments(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n            await interaction.editReply({\n                content: '📄 Wochenbericht als **Markdown und PDF**:',\n                files: attachments\n            });",
-  'Export als Markdown und PDF'
+  "            const attachments = await weeklyReportAttachments(scans.daily.entries, scans.absence.entries, scans.unavailableMemberIds);\n            await interaction.editReply({\n                content: '📄 Aktueller Wochenbericht (nur für dich sichtbar):',\n                files: attachments\n            });",
+  'Vorschau als Markdown und PDF'
 );
 
 source = source

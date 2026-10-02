@@ -482,33 +482,53 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
   });
 }
 
-async function status(interaction: ChatInputCommandInteraction): Promise<void> {
-  const state = await loadState();
-  const own = state.sessions
-    .filter((session) => session.userId === interaction.user.id)
-    .sort((a, b) => b.startAt.localeCompare(a.startAt))
-    .slice(0, 7);
+const WEEKDAY_SHORT = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 
-  if (own.length === 0) {
-    await interaction.reply({
-      content: 'Noch keine Arbeitszeiten gespeichert. Bereits vorhandene alte Dailies bleiben trotzdem im Wochenbericht erhalten.',
-      flags: MessageFlags.Ephemeral
-    });
-    return;
+async function weekOverview(interaction: ChatInputCommandInteraction): Promise<void> {
+  const state = await loadState();
+  const now = nowBerlin();
+  const lastWeek = interaction.options.getString('zeitraum') === 'letzte';
+  const weekStart = now.startOf('week').minus({ weeks: lastWeek ? 1 : 0 });
+  const own = state.sessions.filter((session) => session.userId === interaction.user.id);
+
+  const lines: string[] = [];
+  let total = 0;
+  let hasOpen = false;
+  for (let offset = 0; offset < 7; offset++) {
+    const day = weekStart.plus({ days: offset });
+    const label = `**${WEEKDAY_SHORT[offset]} ${day.toFormat('dd.MM.')}**`;
+    const session = own.find((entry) => entry.date === sessionDate(day));
+    if (!session) {
+      // Wochenende nur anzeigen, wenn dort gearbeitet wurde.
+      if (offset < 5) lines.push(`${label} · –`);
+      continue;
+    }
+
+    const start = parseIso(session.startAt);
+    const net = durationMinutes(session);
+    if (net === undefined) {
+      hasOpen = true;
+      const openStatus = day.hasSame(now, 'day')
+        ? openPause(session) ? 'Pause läuft' : 'läuft'
+        : 'Ende fehlt · bitte mit /arbeitszeit nachtragen eintragen';
+      lines.push(`${label} · seit ${start.toFormat('HH:mm')} · ${openStatus}`);
+      continue;
+    }
+
+    total += net;
+    lines.push(
+      `${label} · ${start.toFormat('HH:mm')}–${endTimeText(session)} · Pause ${durationText(session.pauseMinutes)} · **${durationText(net)}**`
+    );
   }
 
-  const lines = own.map((session) => {
-    const start = parseIso(session.startAt);
-    const end = session.endAt ? parseIso(session.endAt) : undefined;
-    const net = durationMinutes(session);
-    const paused = openPause(session);
-    if (end && net !== undefined) {
-      return `• **${DateTime.fromISO(session.date).toFormat('dd.MM.yyyy')}** · ${start.toFormat('HH:mm')}–${endTimeText(session)} · ${durationText(net)}${provenanceText(session)}`;
-    }
-    return `• **${DateTime.fromISO(session.date).toFormat('dd.MM.yyyy')}** · seit ${start.toFormat('HH:mm')} Uhr · ${paused ? 'Pause' : 'noch offen'}`;
+  const weekEnd = weekStart.plus({ days: 6 });
+  await interaction.reply({
+    content:
+      `## Deine Arbeitszeiten · KW ${weekStart.weekNumber} (${weekStart.toFormat('dd.MM.')}–${weekEnd.toFormat('dd.MM.yyyy')})\n` +
+      `${lines.join('\n')}\n\n**Summe: ${durationText(total)}** netto` +
+      (hasOpen ? '\n-# Tage ohne Ende zählen erst mit, wenn das Ende eingetragen ist.' : ''),
+    flags: MessageFlags.Ephemeral
   });
-
-  await interaction.reply({ content: `## Deine Arbeitszeiten\n${lines.join('\n')}`, flags: MessageFlags.Ephemeral });
 }
 
 async function ensureTimePanel(client: Client): Promise<void> {
@@ -578,7 +598,17 @@ export const workTrackingCommands = [
   new SlashCommandBuilder()
     .setName('arbeitszeit')
     .setDescription('Arbeitszeiten anzeigen oder nachtragen')
-    .addSubcommand((sub) => sub.setName('status').setDescription('Zeigt deine letzten Arbeitszeiten'))
+    .addSubcommand((sub) =>
+      sub
+        .setName('woche')
+        .setDescription('Zeigt deine Arbeitszeiten der Woche mit Pausen und Summe')
+        .addStringOption((option) =>
+          option
+            .setName('zeitraum')
+            .setDescription('Welche Woche?')
+            .addChoices({ name: 'Diese Woche', value: 'aktuell' }, { name: 'Letzte Woche', value: 'letzte' })
+        )
+    )
     .addSubcommand((sub) =>
       sub
         .setName('nachtragen')
@@ -708,7 +738,7 @@ export function installWorkTracking(client: Client): void {
           return;
         }
         const sub = interaction.options.getSubcommand();
-        if (sub === 'status') await status(interaction);
+        if (sub === 'woche') await weekOverview(interaction);
         if (sub === 'nachtragen') await backfill(interaction);
         return;
       }

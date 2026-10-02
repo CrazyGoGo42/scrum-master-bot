@@ -43,8 +43,8 @@ replaceOnce(
 );
 
 replaceOnce(
-  "!['task', 'blocker', 'entscheidung', 'meeting-nachtragen', 'daily-bearbeiten'].includes(interaction.commandName)",
-  "!['task', 'blocker', 'entscheidung', 'meeting-nachtragen', 'daily-bearbeiten', 'arbeitszeit'].includes(interaction.commandName)",
+  "!['blocker', 'entscheidung', 'meeting-nachtragen', 'daily-bearbeiten'].includes(interaction.commandName)",
+  "!['blocker', 'entscheidung', 'meeting-nachtragen', 'daily-bearbeiten', 'arbeitszeit'].includes(interaction.commandName)",
   'Doppelte Command-Verarbeitung verhindern'
 );
 
