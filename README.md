@@ -128,6 +128,8 @@ Eine falsch konfigurierte Forum-ID eines Teammitglieds legt den restlichen Bot n
 
 Freitags ab **14:00 Uhr** prüft der Bot alle 30 Minuten, ob der Freitag für alle abgeschlossen ist (Daily und beendete Arbeitszeit oder Abmeldung), und erstellt dann automatisch einen Wochenbericht im Wochenbericht-Forum. Gibt es am Samstag um **12:00 Uhr** noch keinen Bericht für die Woche, wird er in jedem Fall erstellt (Markdown und PDF). Fehlende Dailies, Abmeldungen oder Endzeiten werden darin gekennzeichnet.
 
+Ein Bericht umfasst **Samstag bis Freitag**: Freiwillige Arbeit am Wochenende erscheint ganz oben im nächsten Bericht (Sa, So, Mo …), auch die vom Samstag, an dem der aktuelle Bericht erscheint. Samstag und Sonntag werden nur angezeigt, wenn dort ein Daily oder eine Arbeitszeit existiert, und gelten nie als fehlende Dokumentation.
+
 Der Bericht enthält:
 
 - Tätigkeiten von Joline, David und Duy

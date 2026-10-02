@@ -1057,7 +1057,9 @@ async function weeklyScans(): Promise<{
   absence: AbsenceScanResult;
   unavailableMemberIds: Set<string>;
 }> {
-  const { start, end } = currentWeekRange();
+  // Der Bericht umfasst Samstag bis Freitag; Wochenendarbeit vor der Kalenderwoche gehört dazu.
+  const { start: monday, end } = currentWeekRange();
+  const start = monday.minus({ days: 2 });
   const daily = await scanDailyEntriesInRange(start, end);
   const absence = await scanAbsencesInRange(start, end);
   return {

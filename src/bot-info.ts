@@ -64,6 +64,7 @@ export function botInfoPageText(): string {
     `- **ca. ${config.pushReminderAfterHours} h nach dem Daily** · einmalige Push-Erinnerung bei „Noch zu pushen: Ja“ (der Bot prüft GitHub nicht)`,
     '- **Freitag ab 14:00** · Wochenbericht, sobald alle fertig sind (Daily und Ende oder Abmeldung)',
     '- **Samstag 12:00** · Wochenbericht in jedem Fall, falls noch keiner existiert',
+    '- **Wochenende** · freiwillige Arbeit am Samstag und Sonntag erscheint ganz oben im **nächsten** Wochenbericht, auch die vom Samstag, an dem der aktuelle Bericht kommt',
     `> Der Wochenbericht (PDF und Markdown) erscheint in ${weeklyForum}. Bitte vor dem Weiterleiten an den PbD kurz prüfen.`,
     '',
     '## Schule · das Wichtigste',

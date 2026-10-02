@@ -92,6 +92,8 @@ type WorkState = { sessions?: WorkSession[] };
 
 type WeekData = {
   date: DateTime;
+  // Montag der Kalenderwoche (für KW-Angaben); start ist der Samstag davor.
+  monday: DateTime;
   start: DateTime;
   end: DateTime;
   unavailableMemberIds: Set<string>;
@@ -211,7 +213,7 @@ function sessionTimes(session: WorkSession): { start: DateTime; end?: DateTime; 
 function workText(session: WorkSession | undefined, hasDaily: boolean, day: DateTime): string {
   if (!session) {
     if (day.weekday === 5) return 'Nicht übermittelt';
-    return hasDaily ? 'Nicht erfasst (Altbestand vor Arbeitszeiterfassung)' : 'Keine Arbeitszeit erfasst';
+    return hasDaily && !isWeekend(day) ? 'Nicht erfasst (Altbestand vor Arbeitszeiterfassung)' : 'Keine Arbeitszeit erfasst';
   }
 
   const { start, end, netMinutes } = sessionTimes(session);
@@ -224,9 +226,15 @@ function workText(session: WorkSession | undefined, hasDaily: boolean, day: Date
   return `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}${nextDay} Uhr · Pause ${session.pauseMinutes ?? 0} min · ${durationText(netMinutes)}`;
 }
 
-function weekRange(date: DateTime): { start: DateTime; end: DateTime } {
-  const start = date.startOf('week').startOf('day');
-  return { start, end: start.plus({ days: 4 }).endOf('day') };
+// Ein Bericht umfasst Samstag bis Freitag: freiwillige Wochenendarbeit landet im folgenden Bericht,
+// auch die vom Samstag, an dem der aktuelle Bericht erscheint.
+function weekRange(date: DateTime): { monday: DateTime; start: DateTime; end: DateTime } {
+  const monday = date.startOf('week').startOf('day');
+  return { monday, start: monday.minus({ days: 2 }), end: monday.plus({ days: 4 }).endOf('day') };
+}
+
+function isWeekend(day: DateTime): boolean {
+  return day.weekday >= 6;
 }
 
 function weekdayName(date: DateTime): string {
@@ -244,7 +252,7 @@ function collectWeek(
   unavailableMemberIds: Set<string>,
   date: DateTime
 ): WeekData {
-  const { start, end } = weekRange(date);
+  const { monday, start, end } = weekRange(date);
   const work = readJson<WorkState>(workStatePath, {});
   const history = readJson<MeetingHistory>(meetingHistoryPath, {});
   const project = readJson<ProjectState>(projectStatePath, {});
@@ -262,6 +270,7 @@ function collectWeek(
 
   return {
     date,
+    monday,
     start,
     end,
     unavailableMemberIds,
@@ -281,8 +290,9 @@ function collectWeek(
   };
 }
 
+// Reguläre Projekttage Mo–Fr.
 function weekDays(week: WeekData): DateTime[] {
-  return [0, 1, 2, 3, 4].map((offset) => week.start.plus({ days: offset }));
+  return [0, 1, 2, 3, 4].map((offset) => week.monday.plus({ days: offset }));
 }
 
 function dayRecord(week: WeekData, memberId: string, day: DateTime): DayRecord {
@@ -294,6 +304,18 @@ function dayRecord(week: WeekData, memberId: string, day: DateTime): DayRecord {
     session: week.sessions.find((entry) => entry.userId === memberId && entry.date === key),
     isFuture: day.startOf('day') > week.date.startOf('day')
   };
+}
+
+// Mo–Fr plus Samstag/Sonntag davor, wenn dort (von der Person bzw. vom Team) ein Daily oder eine Arbeitszeit existiert.
+function reportDays(week: WeekData, memberId?: string): DateTime[] {
+  const ids = memberId ? [memberId] : config.members.map((member) => member.discordId);
+  const weekend = [week.start, week.start.plus({ days: 1 })].filter((day) =>
+    ids.some((id) => {
+      const record = dayRecord(week, id, day);
+      return Boolean(record.daily || record.session);
+    })
+  );
+  return [...weekend, ...weekDays(week)];
 }
 
 function missingDocumentation(week: WeekData): { name: string; day: DateTime }[] {
@@ -309,13 +331,13 @@ function missingDocumentation(week: WeekData): { name: string; day: DateTime }[]
 }
 
 function renderMarkdown(week: WeekData): string {
-  const { date, start, end } = week;
+  const { date, monday, end } = week;
 
   const out: string[] = [
     '# Wochenbericht Hauptprojekt',
     '',
-    `**Kalenderwoche:** KW ${start.weekNumber} / ${start.weekYear}`,
-    `**Berichtszeitraum:** ${formatDate(start)} - ${formatDate(end)}`,
+    `**Kalenderwoche:** KW ${monday.weekNumber} / ${monday.weekYear}`,
+    `**Berichtszeitraum:** ${formatDate(reportDays(week)[0])} - ${formatDate(end)}`,
     `**Team:** ${config.members.map((member) => member.name).join(', ')}`,
     `**Erstellt:** ${formatDate(date)} · ${date.toFormat('HH:mm')} Uhr`,
     '',
@@ -343,10 +365,10 @@ function renderMarkdown(week: WeekData): string {
       continue;
     }
 
-    for (const day of weekDays(week)) {
+    for (const day of reportDays(week, member.discordId)) {
       const { daily, absence, session, isFuture } = dayRecord(week, member.discordId, day);
 
-      out.push('', `#### ${weekdayName(day)}, ${formatDate(day)}`);
+      out.push('', `#### ${weekdayName(day)}, ${formatDate(day)}${isWeekend(day) ? ' (freiwillig)' : ''}`);
 
       if (absence && !daily) {
         out.push(`**Status:** Abgemeldet · ${absenceLabel(absence)}`);
@@ -354,7 +376,8 @@ function renderMarkdown(week: WeekData): string {
       }
 
       if (!daily) {
-        out.push(isFuture ? '**Status:** Noch nicht erreicht.' : '**Status:** Keine Daily-Dokumentation vorhanden.');
+        if (isWeekend(day)) out.push('**Status:** Freiwillige Arbeit ohne Daily.');
+        else out.push(isFuture ? '**Status:** Noch nicht erreicht.' : '**Status:** Keine Daily-Dokumentation vorhanden.');
         if (session) out.push(`**Arbeitszeit:** ${workText(session, false, day)}`);
         continue;
       }
@@ -611,9 +634,8 @@ function runsHeight(doc: PDFKit.PDFDocument, runs: Run[], width: number): number
   }, 0);
 }
 
-function drawTable(pdf: Pdf, columns: TableColumn[], rows: TableCell[][]): void {
+function drawTable(pdf: Pdf, columns: TableColumn[], rows: TableCell[][], padX = 5): void {
   const { doc } = pdf;
-  const padX = 5;
   const padY = 5;
   const headerHeight = 19;
   const totalWidth = columns.reduce((sum, column) => sum + column.width, 0);
@@ -720,41 +742,48 @@ function endGridEntry(pdf: Pdf, entry: GridEntry): void {
   pdf.doc.y += 5;
 }
 
-function workCell(record: DayRecord): TableCell {
+// compact: 7 Tagesspalten (mit Wochenende) brauchen kleinere Schrift.
+function workCell(record: DayRecord, compact = false): TableCell {
   const { day, absence, daily, session, isFuture } = record;
-  if (isFuture) return { runs: [{ text: '–', color: MUTED }] };
+  const size = compact ? 7.6 : TABLE_SIZE;
+  const small = compact ? 6.8 : 7.2;
+  if (isFuture) return { runs: [{ text: '–', size, color: MUTED }] };
+  // Wochenende ist freiwillig: ohne Arbeitszeit nur ein Strich, nie „keine Angabe“.
+  if (isWeekend(day) && !session) {
+    return { runs: [{ text: daily ? 'nicht erfasst' : '–', style: daily ? 'italic' : 'regular', size, color: MUTED }] };
+  }
   if (absence && !daily) {
     const label = absence.kind === 'Krankheit' || absence.kind === 'Termin' ? absence.kind : 'Abwesend';
-    return { runs: [{ text: label, color: MUTED }], fill: ABSENT_FILL };
+    return { runs: [{ text: label, size, color: MUTED }], fill: ABSENT_FILL };
   }
 
   if (!session) {
-    if (day.weekday === 5) return { runs: [{ text: 'nicht übermittelt', style: 'italic', color: MUTED }] };
-    if (!daily) return { runs: [{ text: 'keine Angabe', style: 'italic', color: ALERT }] };
-    return { runs: [{ text: 'nicht erfasst', style: 'italic', color: MUTED }] };
+    if (day.weekday === 5) return { runs: [{ text: 'nicht übermittelt', style: 'italic', size, color: MUTED }] };
+    if (!daily) return { runs: [{ text: 'keine Angabe', style: 'italic', size, color: ALERT }] };
+    return { runs: [{ text: 'nicht erfasst', style: 'italic', size, color: MUTED }] };
   }
 
   const { start, end, netMinutes } = sessionTimes(session);
   if (!end) {
     return {
       runs: [
-        { text: `ab ${start.toFormat('HH:mm')}` },
-        { text: day.weekday === 5 ? 'Ende nicht übermittelt' : 'nicht abgeschlossen', style: 'italic', size: 7.2, color: MUTED }
+        { text: `ab ${start.toFormat('HH:mm')}`, size },
+        { text: day.weekday === 5 ? 'Ende nicht übermittelt' : 'nicht abgeschlossen', style: 'italic', size: small, color: MUTED }
       ]
     };
   }
 
   const runs: Run[] = [
-    { text: `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}` },
-    { text: hoursText(netMinutes), style: 'bold' },
-    { text: `Pause ${session.pauseMinutes ?? 0} min`, size: 7.2, color: MUTED }
+    { text: `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}`, size },
+    { text: hoursText(netMinutes), style: 'bold', size },
+    { text: `Pause ${session.pauseMinutes ?? 0} min`, size: small, color: MUTED }
   ];
-  if (end.toISODate() !== start.toISODate()) runs.push({ text: 'bis Folgetag', style: 'italic', size: 7.2, color: MUTED });
+  if (end.toISODate() !== start.toISODate()) runs.push({ text: 'bis Folgetag', style: 'italic', size: small, color: MUTED });
   return { runs };
 }
 
 function netMinutesInWeek(week: WeekData, memberId: string): number {
-  return weekDays(week).reduce((sum, day) => {
+  return reportDays(week, memberId).reduce((sum, day) => {
     const record = dayRecord(week, memberId, day);
     if (!record.session || (record.absence && !record.daily)) return sum;
     return sum + sessionTimes(record.session).netMinutes;
@@ -763,14 +792,15 @@ function netMinutesInWeek(week: WeekData, memberId: string): number {
 
 function drawTitleBlock(pdf: Pdf, week: WeekData): void {
   const { doc } = pdf;
-  const { start, end, date } = week;
+  const { monday, end, date } = week;
+  const first = reportDays(week)[0];
   doc.y = MARGIN.top;
 
   setFont(doc, 'bold', 24, INK);
   doc.text('Wochenbericht', MARGIN.left, doc.y, { width: contentWidth(doc) });
   doc.y += 2;
   setFont(doc, 'regular', 12, BIB_BLUE);
-  doc.text(`Kalenderwoche ${start.weekNumber} · ${start.toFormat('dd.MM.')} – ${end.toFormat('dd.MM.yyyy')}`, MARGIN.left, doc.y, {
+  doc.text(`Kalenderwoche ${monday.weekNumber} · ${first.toFormat('dd.MM.')} – ${end.toFormat('dd.MM.yyyy')}`, MARGIN.left, doc.y, {
     width: contentWidth(doc)
   });
   doc.y += 16;
@@ -798,11 +828,13 @@ function drawAttendance(pdf: Pdf, week: WeekData): void {
   const { doc } = pdf;
   drawChapter(pdf, 1, 'Anwesenheit und Arbeitszeiten');
 
-  const days = weekDays(week);
-  const sumWidth = 62;
-  const dayWidth = (contentWidth(doc) - GRID_DATE_WIDTH - sumWidth) / days.length;
+  const days = reportDays(week);
+  const compact = days.length > 5;
+  const nameWidth = compact ? 64 : GRID_DATE_WIDTH;
+  const sumWidth = compact ? 54 : 62;
+  const dayWidth = (contentWidth(doc) - nameWidth - sumWidth) / days.length;
   const columns: TableColumn[] = [
-    { title: 'Name', width: GRID_DATE_WIDTH },
+    { title: 'Name', width: nameWidth },
     ...days.map((day): TableColumn => ({ title: shortDate(day), width: dayWidth, align: 'center' })),
     { title: 'Summe', width: sumWidth, align: 'right' }
   ];
@@ -810,13 +842,14 @@ function drawAttendance(pdf: Pdf, week: WeekData): void {
     const total = netMinutesInWeek(week, member.discordId);
     return [
       { runs: [{ text: member.name, style: 'bold' }] },
-      ...days.map((day) => workCell(dayRecord(week, member.discordId, day))),
+      ...days.map((day) => workCell(dayRecord(week, member.discordId, day), compact)),
       { runs: [{ text: total > 0 ? hoursText(total) : '–', style: 'bold' }] }
     ];
   });
-  drawTable(pdf, columns, rows);
+  drawTable(pdf, columns, rows, compact ? 3 : 5);
   doc.y += 5;
   drawNote(pdf, 'Je Tag: Beginn–Ende, Arbeitszeit netto (nach Abzug der Pause), Pause. Summe = Netto-Arbeitszeit der Woche.');
+  if (days.some(isWeekend)) drawNote(pdf, 'Sa/So: freiwillige Arbeit am Wochenende vor dieser Kalenderwoche, kein regulärer Projekttag.');
 
   doc.y += 6;
   const missing = missingDocumentation(week);
@@ -866,13 +899,20 @@ function drawActivities(pdf: Pdf, week: WeekData): void {
       return;
     }
 
-    for (const day of weekDays(week)) {
+    for (const day of reportDays(week, member.discordId)) {
       const { daily, absence, isFuture } = dayRecord(week, member.discordId, day);
       if (isFuture) continue;
 
       if (absence && !daily) {
         const entry = startGridEntry(pdf, shortDate(day), undefined, 14);
         drawGridRow(pdf, 'Abwesend', absenceLabel(absence), { textColor: MUTED });
+        endGridEntry(pdf, entry);
+        continue;
+      }
+
+      if (!daily && isWeekend(day)) {
+        const entry = startGridEntry(pdf, shortDate(day), 'freiwillig', 14);
+        drawGridRow(pdf, 'Status', 'Freiwillige Arbeit ohne Daily.', { textColor: MUTED });
         endGridEntry(pdf, entry);
         continue;
       }
@@ -1071,7 +1111,7 @@ function drawPageFrame(pdf: Pdf, week: WeekData): void {
     doc.moveTo(MARGIN.left, footerY - 6).lineTo(right, footerY - 6).lineWidth(0.5).strokeColor(RULE).stroke();
     setFont(doc, 'regular', 7.5, MUTED);
     doc.text(
-      `Wochenbericht KW ${week.start.weekNumber} / ${week.start.weekYear} · Team ${config.members.map((member) => member.name).join(', ')}`,
+      `Wochenbericht KW ${week.monday.weekNumber} / ${week.monday.weekYear} · Team ${config.members.map((member) => member.name).join(', ')}`,
       MARGIN.left,
       footerY,
       { width: contentWidth(doc) - 80, lineBreak: false }
@@ -1091,7 +1131,7 @@ async function renderPdf(week: WeekData): Promise<Buffer> {
     lang: 'de-DE',
     displayTitle: true,
     info: {
-      Title: `Wochenbericht KW ${week.start.weekNumber} / ${week.start.weekYear}`,
+      Title: `Wochenbericht KW ${week.monday.weekNumber} / ${week.monday.weekYear}`,
       Author: config.members.map((member) => member.name).join(', '),
       Subject: `Hauptprojekt · ${formatDate(week.start)} - ${formatDate(week.end)}`
     }
@@ -1138,7 +1178,7 @@ export async function weeklyReportAttachments(
   ).catch((error) => console.error('[Weekly PDF] Blocker aus Dailies konnten nicht übernommen werden.', error));
 
   const week = collectWeek(entries, absences, unavailableMemberIds, date);
-  const stem = `Wochenbericht_KW${String(week.start.weekNumber).padStart(2, '0')}_${week.start.weekYear}`;
+  const stem = `Wochenbericht_KW${String(week.monday.weekNumber).padStart(2, '0')}_${week.monday.weekYear}`;
   const pdf = await renderPdf(week);
   return [
     new AttachmentBuilder(Buffer.from(renderMarkdown(week), 'utf8'), { name: `${stem}.md` }),
