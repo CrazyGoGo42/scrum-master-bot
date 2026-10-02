@@ -76,6 +76,8 @@ type ProjectBlocker = {
   source?: string;
   createdAt: string;
   resolvedAt?: string;
+  dailyThreadId?: string;
+  dailyText?: string;
 };
 
 type ProjectState = {
@@ -414,7 +416,12 @@ function renderMarkdown(week: WeekData): string {
 
   const dailyBlockers = week.entries.flatMap((entry) => {
     const blockers = section(entry.content, ['Blocker']);
-    return isRealBlocker(blockers) ? blockers.map((text) => ({ ownerId: entry.ownerId, text })) : [];
+    if (!isRealBlocker(blockers)) return [];
+    // Mit /blocker bearbeiten geänderter Text hat Vorrang vor dem Text im Daily.
+    return blockers.map((text) => ({
+      ownerId: entry.ownerId,
+      text: matchingDailyBlocker(week.allProjectBlockers, entry.ownerId, text, entry.thread?.id, entry.createdAt)?.text ?? text
+    }));
   });
 
   out.push('', '## 5. Probleme und Blocker');
@@ -987,7 +994,7 @@ function drawBlockers(pdf: Pdf, week: WeekData): void {
     for (const text of blockers) {
       // Der Status kommt aus der Blocker-Liste (/blocker lösen).
       const blocker = matchingDailyBlocker(week.allProjectBlockers, entry.ownerId, text, entry.thread?.id, entry.createdAt);
-      add({ date: entry.createdAt, ownerId: entry.ownerId, text, blocker });
+      add({ date: entry.createdAt, ownerId: entry.ownerId, text: blocker?.text ?? text, blocker });
     }
   }
   for (const blocker of week.projectBlockers) {

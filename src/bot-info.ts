@@ -34,6 +34,7 @@ export function botInfoPageText(): string {
     '- Buttons unter jeder Meeting-Karte: **Protokoll**, **Aufgabe**, **Entscheidung**',
     '**Blocker und Entscheidungen**',
     '- **/blocker add** · Blocker erfassen, der nicht im Daily steht',
+    '- **/blocker bearbeiten** · Text deines Blockers ändern (ID aus /blocker offen)',
     '- **/entscheidung add** · wichtige Projektentscheidung mit Begründung festhalten',
     '- **/entscheidung liste** · bisherige Entscheidungen mit ID ansehen',
     '- **/entscheidung löschen** · Entscheidung entfernen (ID aus der Liste)',

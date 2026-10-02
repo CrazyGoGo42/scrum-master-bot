@@ -47,6 +47,8 @@ type ProjectBlocker = {
   createdAt: string;
   resolvedAt?: string;
   dailyThreadId?: string;
+  // Text wie im Daily, falls der Blocker später mit /blocker bearbeiten geändert wurde.
+  dailyText?: string;
 };
 
 type ProjectDecision = {
@@ -378,7 +380,12 @@ function dailyBlockerLines(blockerText: string): string[] {
   return textLines(blockerText).filter((text) => !NO_BLOCKER.has(normalize(text)));
 }
 
-type BlockerLike = { ownerId: string; text: string; createdAt: string; dailyThreadId?: string };
+type BlockerLike = { ownerId: string; text: string; createdAt: string; dailyThreadId?: string; dailyText?: string };
+
+// Abgleich mit dem Daily immer über den Text, der im Daily steht – auch nach /blocker bearbeiten.
+function dailyMatchText(blocker: { text: string; dailyText?: string }): string {
+  return normalize(blocker.dailyText ?? blocker.text);
+}
 
 /**
  * Findet den gespeicherten Blocker zu einer Blocker-Zeile aus einem Daily:
@@ -394,7 +401,7 @@ export function matchingDailyBlocker<T extends BlockerLike>(
   reportedAt: DateTime
 ): T | undefined {
   const same = blockers
-    .filter((blocker) => blocker.ownerId === ownerId && normalize(blocker.text) === normalize(text))
+    .filter((blocker) => blocker.ownerId === ownerId && dailyMatchText(blocker) === normalize(text))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const fromThread = dailyThreadId ? same.filter((blocker) => blocker.dailyThreadId === dailyThreadId) : [];
   if (fromThread.length > 0) return fromThread.at(-1);
@@ -415,7 +422,7 @@ export async function trackDailyBlockers(ownerId: string, blockerText: string, d
       blocker.source === 'daily' &&
       blocker.dailyThreadId === dailyThreadId &&
       blocker.status === 'open' &&
-      !current.has(normalize(blocker.text))
+      !current.has(dailyMatchText(blocker))
   );
   if (replaced.length > 0) {
     state.blockers = state.blockers.filter((blocker) => !replaced.includes(blocker));
@@ -426,7 +433,7 @@ export async function trackDailyBlockers(ownerId: string, blockerText: string, d
     const exists = state.blockers.some(
       (blocker) =>
         blocker.ownerId === ownerId &&
-        normalize(blocker.text) === normalize(text) &&
+        dailyMatchText(blocker) === normalize(text) &&
         (blocker.status === 'open' || blocker.dailyThreadId === dailyThreadId)
     );
     if (exists) continue;
@@ -588,6 +595,13 @@ export const projectCommands = [
     .addSubcommand((sub) => sub.setName('offen').setDescription('Zeigt offene Blocker'))
     .addSubcommand((sub) =>
       sub
+        .setName('bearbeiten')
+        .setDescription('Ändert den Text deines Blockers')
+        .addStringOption((option) => option.setName('id').setDescription('z. B. B-001 (siehe /blocker offen)').setRequired(true))
+        .addStringOption((option) => option.setName('text').setDescription('Neuer Text').setRequired(true).setMaxLength(500))
+    )
+    .addSubcommand((sub) =>
+      sub
         .setName('lösen')
         .setDescription('Markiert deinen Blocker als gelöst')
         .addStringOption((option) => option.setName('id').setDescription('z. B. B-001').setRequired(true))
@@ -731,6 +745,16 @@ async function handleBlockerCommand(interaction: ChatInputCommandInteraction): P
     await interaction.reply({ content: '❌ Dieser Blocker gehört dir nicht oder wurde nicht gefunden.', flags: MessageFlags.Ephemeral });
     return;
   }
+
+  if (sub === 'bearbeiten') {
+    const text = interaction.options.getString('text', true).trim();
+    if (blocker.source === 'daily') blocker.dailyText ??= blocker.text;
+    blocker.text = text;
+    await saveState(state);
+    await interaction.reply({ content: `✏️ **${blocker.id}** wurde geändert: ${text}`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
   blocker.status = 'resolved';
   blocker.resolvedAt = nowIso();
   await saveState(state);
