@@ -28,6 +28,8 @@ type WorkSession = {
   startAt: string;
   endAt?: string;
   pauseMinutes: number;
+  // kind 'stop': Lücke zwischen Stop und erneutem Start, zählt weder als Arbeit noch als Pause.
+  pauses?: { startAt: string; endAt?: string; kind?: string }[];
 };
 
 type StoredMeeting = {
@@ -202,12 +204,38 @@ function durationText(minutes: number): string {
   return `${hours} h ${rest} min`;
 }
 
-function sessionTimes(session: WorkSession): { start: DateTime; end?: DateTime; netMinutes: number } {
+type WorkBlock = { start: DateTime; end: DateTime };
+
+function sessionTimes(session: WorkSession): { start: DateTime; end?: DateTime; netMinutes: number; blocks: WorkBlock[] } {
   const start = DateTime.fromISO(session.startAt, { zone: config.timezone });
   const end = session.endAt ? DateTime.fromISO(session.endAt, { zone: config.timezone }) : undefined;
-  if (!end?.isValid) return { start, netMinutes: 0 };
+  if (!end?.isValid) return { start, netMinutes: 0, blocks: [] };
+
+  // Arbeitsblöcke: an jedem Stop getrennt. Ohne Stop ist es ein Block von Start bis Ende.
+  const stops = (session.pauses ?? [])
+    .filter((interval) => interval.kind === 'stop' && interval.endAt)
+    .map((interval) => ({
+      from: DateTime.fromISO(interval.startAt, { zone: config.timezone }),
+      to: DateTime.fromISO(interval.endAt as string, { zone: config.timezone })
+    }))
+    .filter((interval) => interval.from.isValid && interval.to.isValid && interval.to > interval.from)
+    .sort((a, b) => a.from.toMillis() - b.from.toMillis());
+  const blocks: WorkBlock[] = [];
+  let blockStart = start;
+  for (const stop of stops) {
+    blocks.push({ start: blockStart, end: stop.from });
+    blockStart = stop.to;
+  }
+  blocks.push({ start: blockStart, end });
+
   const gross = Math.round(end.diff(start, 'minutes').minutes);
-  return { start, end, netMinutes: Math.max(0, gross - Math.max(0, session.pauseMinutes ?? 0)) };
+  const stopped = stops.reduce((sum, stop) => sum + Math.round(stop.to.diff(stop.from, 'minutes').minutes), 0);
+  return { start, end, blocks, netMinutes: Math.max(0, gross - Math.max(0, session.pauseMinutes ?? 0) - stopped) };
+}
+
+function blockText(block: WorkBlock, day: string | null): string {
+  const clock = (time: DateTime): string => `${time.toFormat('HH:mm')}${time.toISODate() !== day ? ' (+1 Tag)' : ''}`;
+  return `${clock(block.start)}–${clock(block.end)}`;
 }
 
 function workText(session: WorkSession | undefined, hasDaily: boolean, day: DateTime): string {
@@ -216,14 +244,14 @@ function workText(session: WorkSession | undefined, hasDaily: boolean, day: Date
     return hasDaily && !isWeekend(day) ? 'Nicht erfasst (Altbestand vor Arbeitszeiterfassung)' : 'Keine Arbeitszeit erfasst';
   }
 
-  const { start, end, netMinutes } = sessionTimes(session);
+  const { start, end, netMinutes, blocks } = sessionTimes(session);
   if (!end) {
     if (day.weekday === 5) return 'Nicht übermittelt';
     return `${start.toFormat('HH:mm')} Uhr - noch nicht abgeschlossen`;
   }
 
-  const nextDay = end.toISODate() !== start.toISODate() ? ' (+1 Tag)' : '';
-  return `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}${nextDay} Uhr · Pause ${session.pauseMinutes ?? 0} min · ${durationText(netMinutes)}`;
+  const ranges = blocks.map((block) => blockText(block, start.toISODate())).join(', ');
+  return `${ranges} Uhr · Pause ${session.pauseMinutes ?? 0} min · ${durationText(netMinutes)}`;
 }
 
 // Ein Bericht umfasst Samstag bis Freitag: freiwillige Wochenendarbeit landet im folgenden Bericht,
@@ -763,7 +791,7 @@ function workCell(record: DayRecord, compact = false): TableCell {
     return { runs: [{ text: 'nicht erfasst', style: 'italic', size, color: MUTED }] };
   }
 
-  const { start, end, netMinutes } = sessionTimes(session);
+  const { start, end, netMinutes, blocks } = sessionTimes(session);
   if (!end) {
     return {
       runs: [
@@ -773,8 +801,9 @@ function workCell(record: DayRecord, compact = false): TableCell {
     };
   }
 
+  // Ein Arbeitsblock pro Zeile; „bis Folgetag“ steht darunter, deshalb hier ohne (+1 Tag).
   const runs: Run[] = [
-    { text: `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}`, size },
+    ...blocks.map((block) => ({ text: `${block.start.toFormat('HH:mm')}–${block.end.toFormat('HH:mm')}`, size })),
     { text: hoursText(netMinutes), style: 'bold', size },
     { text: `Pause ${session.pauseMinutes ?? 0} min`, size: small, color: MUTED }
   ];

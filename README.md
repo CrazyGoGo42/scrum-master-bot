@@ -197,7 +197,7 @@ Die vollständige, sortierte Übersicht für das Team steht auf der Info-Seite (
 
 - `/daily` – Daily oder Abmeldung für den Arbeitstag starten
 - `/daily-bearbeiten` – heutiges Daily korrigieren
-- `/arbeitszeit woche` / `/arbeitszeit nachtragen` – eigene Wochenstunden ansehen oder Zeiten nachtragen (Start/Pause/Ende per Buttons im Zeiterfassungs-Channel)
+- `/arbeitszeit woche` / `/arbeitszeit nachtragen` – eigene Wochenstunden ansehen oder Zeiten nachtragen (Start/Pause/Stop/Ende per Buttons im Zeiterfassungs-Channel; Stop unterbricht den Tag, ein erneuter Start macht weiter, die Zeit dazwischen zählt nicht)
 - `/blocker add` / `offen` / `bearbeiten` / `lösen` – Blocker verwalten
 - `/entscheidung add` / `liste` / `löschen` – Projektentscheidungen dokumentieren oder entfernen
 - `/meeting` – neues Meeting erstellen, nur im Meeting-Erstellen-Channel
