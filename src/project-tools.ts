@@ -20,6 +20,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
+import { parseItems, singleLine } from './text-items.js';
 
 type TaskStatus = 'todo' | 'doing' | 'done';
 type BlockerStatus = 'open' | 'resolved';
@@ -67,6 +68,8 @@ type MeetingNote = {
   discussed: string;
   decisions?: string;
   tasks?: string;
+  // 'dash': Punkte beginnen mit Spiegelstrich. Fehlt es, ist jede Zeile ein Punkt (ältere Protokolle).
+  listStyle?: 'dash';
   createdAt: string;
 };
 
@@ -156,13 +159,6 @@ function normalize(value: string): string {
   return value.trim().replace(/^[-*]\s*/, '').replace(/\s+/g, ' ').toLocaleLowerCase('de-DE');
 }
 
-function textLines(value: string): string[] {
-  return value
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean);
-}
-
 function taskId(state: ProjectState): string {
   return `T-${String(state.nextTask++).padStart(3, '0')}`;
 }
@@ -224,8 +220,8 @@ function meetingProtocolModal(messageId: string): ModalBuilder {
     .setTitle('Meeting-Protokoll')
     .addComponents(
       modalInput('discussed', 'Was wurde besprochen?', TextInputStyle.Paragraph, 'Kurze Zusammenfassung', true, 1000),
-      modalInput('decisions', 'Entscheidungen', TextInputStyle.Paragraph, 'Optional, eine pro Zeile', false, 1000),
-      modalInput('tasks', 'Neue Aufgaben', TextInputStyle.Paragraph, 'Optional, eine pro Zeile', false, 1000)
+      modalInput('decisions', 'Entscheidungen', TextInputStyle.Paragraph, 'Optional. Mehrere: jede mit - am Zeilenanfang', false, 1000),
+      modalInput('tasks', 'Neue Aufgaben', TextInputStyle.Paragraph, 'Optional. Mehrere: jede mit - am Zeilenanfang', false, 1000)
     );
 }
 
@@ -297,8 +293,11 @@ async function addDecision(
 
 const NO_BLOCKER = new Set(['keine', 'keine blocker', 'nichts', 'aktuell keine', '-']);
 
+// Ein Blocker pro Spiegelstrich-Punkt; mehrzeilige Punkte stehen in der Blocker-Liste in einer Zeile.
 function dailyBlockerLines(blockerText: string): string[] {
-  return textLines(blockerText).filter((text) => !NO_BLOCKER.has(normalize(text)));
+  return parseItems(blockerText)
+    .map(singleLine)
+    .filter((text) => !NO_BLOCKER.has(normalize(text)));
 }
 
 type BlockerLike = { ownerId: string; text: string; createdAt: string; dailyThreadId?: string; dailyText?: string };
@@ -639,6 +638,7 @@ async function handleMeetingModal(interaction: ModalSubmitInteraction): Promise<
     discussed,
     decisions: decisions || undefined,
     tasks: tasks || undefined,
+    listStyle: 'dash',
     createdAt: nowIso()
   };
   state.meetingNotes.push(note);

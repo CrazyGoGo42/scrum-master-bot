@@ -5,6 +5,7 @@ import PDFDocument from 'pdfkit';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
 import { importDailyBlockers, matchingDailyBlocker } from './project-tools.js';
+import { bulletList, parseItems } from './text-items.js';
 
 type DailyLike = {
   ownerId: string;
@@ -49,6 +50,7 @@ type MeetingNote = {
   discussed: string;
   decisions?: string;
   tasks?: string;
+  listStyle?: 'dash';
   createdAt: string;
 };
 
@@ -141,18 +143,12 @@ function section(content: string, names: string[]): string[] {
   const escaped = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
   const match = content.match(new RegExp(`(?:^|\\n)#{1,3}\\s*(?:${escaped})\\s*\\n([\\s\\S]*?)(?=\\n#{1,3}\\s|$)`, 'i'));
   if (!match) return [];
-  return match[1]
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean);
+  return parseItems(match[1]);
 }
 
-function cleanLines(value?: string): string[] {
-  if (!value?.trim()) return [];
-  return value
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean);
+// Ältere Protokolle (ohne listStyle) hatten einen Punkt pro Zeile.
+function noteItems(value: string | undefined, note: MeetingNote): string[] {
+  return parseItems(value, note.listStyle !== 'dash');
 }
 
 function memberName(userId: string): string {
@@ -271,7 +267,7 @@ function weekdayName(date: DateTime): string {
 
 function markdownBullets(items: string[], fallback?: string): string[] {
   if (items.length === 0) return fallback ? [`- ${fallback}`] : [];
-  return items.map((item) => `- ${item}`);
+  return [bulletList(items)];
 }
 
 function collectWeek(
@@ -443,9 +439,9 @@ function renderMarkdown(week: WeekData): string {
       const notes = week.notes.filter((note) => note.messageId === meeting.messageId);
       for (const note of notes) {
         if (note.discussed.trim()) out.push('**Protokoll:**', note.discussed.trim());
-        const decisions = cleanLines(note.decisions);
+        const decisions = noteItems(note.decisions, note);
         if (decisions.length > 0) out.push('**Entscheidungen im Protokoll:**', ...markdownBullets(decisions));
-        const tasks = cleanLines(note.tasks);
+        const tasks = noteItems(note.tasks, note);
         if (tasks.length > 0) out.push('**Aufgaben im Protokoll:**', ...markdownBullets(tasks));
       }
     }
@@ -995,9 +991,9 @@ function drawMeetings(pdf: Pdf, week: WeekData): void {
 
     for (const note of week.notes.filter((entry) => entry.messageId === meeting.messageId)) {
       if (note.discussed.trim()) drawGridRow(pdf, 'Protokoll', note.discussed.trim());
-      const decisions = cleanLines(note.decisions);
+      const decisions = noteItems(note.decisions, note);
       if (decisions.length > 0) drawGridRow(pdf, 'Entscheidungen', decisions);
-      const tasks = cleanLines(note.tasks);
+      const tasks = noteItems(note.tasks, note);
       if (tasks.length > 0) drawGridRow(pdf, 'Aufgaben', tasks);
     }
     endGridEntry(pdf, entry);
@@ -1202,7 +1198,7 @@ export async function weeklyReportAttachments(
         ownerId: entry.ownerId,
         createdAt: entry.createdAt,
         threadId: entry.thread?.id,
-        blockerText: isRealBlocker(section(entry.content, ['Blocker'])) ? section(entry.content, ['Blocker']).join('\n') : ''
+        blockerText: isRealBlocker(section(entry.content, ['Blocker'])) ? bulletList(section(entry.content, ['Blocker'])) : ''
       }))
   ).catch((error) => console.error('[Weekly PDF] Blocker aus Dailies konnten nicht übernommen werden.', error));
 

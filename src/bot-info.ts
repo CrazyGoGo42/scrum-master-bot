@@ -17,6 +17,7 @@ export function botInfoPageText(): string {
     '3. Länger weg und später am Tag weiter? **Stop** drücken und beim Weitermachen wieder **Start**. Die Zeit dazwischen zählt weder als Arbeit noch als Pause.',
     '4. **Ende** drücken, wenn du für heute fertig bist.',
     '> **Daily zuerst, dann arbeiten.** Am Wochenende ist kein Daily nötig.',
+    '> **Mehrere Punkte oder Blocker:** jeden mit `- ` am Zeilenanfang beginnen. Zeilen ohne `- ` gehören zum Punkt darüber, Bindestriche im Satz trennen nichts.',
     '',
     '## Die wichtigsten Befehle',
     '- **/daily** · Daily ausfüllen oder für heute abmelden',

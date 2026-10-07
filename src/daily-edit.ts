@@ -16,6 +16,7 @@ import {
 } from 'discord.js';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
+import { itemsAsBullets, itemsForEditing, parseItems } from './text-items.js';
 import { trackDailyBlockers } from './project-tools.js';
 
 const PUSH_DONE_MARKER = '**Push-Status:** ✅ Erledigt';
@@ -37,12 +38,9 @@ function teamMember(userId: string) {
   return config.members.find((member) => member.discordId === userId);
 }
 
+// Fürs Formular: mehrere Punkte behalten ihren Spiegelstrich, sonst würden sie beim Speichern zu einem Punkt.
 function cleanSection(value: string): string {
-  return value
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean)
-    .join('\n');
+  return itemsForEditing(parseItems(value));
 }
 
 function section(content: string, heading: string): string {
@@ -52,11 +50,7 @@ function section(content: string, heading: string): string {
 }
 
 function linesAsBullets(value: string): string {
-  const lines = value
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean);
-  return lines.length ? lines.map((line) => `- ${line}`).join('\n') : '-';
+  return itemsAsBullets(value, '-');
 }
 
 function modalInput(

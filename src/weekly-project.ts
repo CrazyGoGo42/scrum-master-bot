@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
+import { bulletList, parseItems } from './text-items.js';
 
 type StoredMeeting = {
   messageId: string;
@@ -48,6 +49,7 @@ type MeetingNote = {
   discussed: string;
   decisions?: string;
   tasks?: string;
+  listStyle?: 'dash';
   createdAt: string;
 };
 
@@ -130,12 +132,9 @@ function inRange(value: string, start: DateTime, end: DateTime): boolean {
   return date.isValid && date >= start && date <= end;
 }
 
-function lines(value?: string): string[] {
-  if (!value?.trim()) return [];
-  return value
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean);
+// Ältere Protokolle (ohne listStyle) hatten einen Punkt pro Zeile.
+function noteItems(value: string | undefined, note: MeetingNote): string[] {
+  return parseItems(value, note.listStyle !== 'dash');
 }
 
 function currentReportRange(): { start: DateTime; end: DateTime } {
@@ -185,13 +184,13 @@ export function weeklyProjectReportSection(): string {
     const matchingNotes = notes.filter((note) => note.messageId === meeting.messageId);
     for (const note of matchingNotes) {
       out.push('', `**Protokoll ${note.id}:** ${note.discussed}`);
-      const noteDecisions = lines(note.decisions);
+      const noteDecisions = noteItems(note.decisions, note);
       if (noteDecisions.length > 0) {
-        out.push('**Entscheidungen im Protokoll:**', ...noteDecisions.map((entry) => `- ${entry}`));
+        out.push('**Entscheidungen im Protokoll:**', bulletList(noteDecisions));
       }
-      const noteTasks = lines(note.tasks);
+      const noteTasks = noteItems(note.tasks, note);
       if (noteTasks.length > 0) {
-        out.push('**Aufgaben im Protokoll:**', ...noteTasks.map((entry) => `- ${entry}`));
+        out.push('**Aufgaben im Protokoll:**', bulletList(noteTasks));
       }
     }
   }
@@ -202,10 +201,10 @@ export function weeklyProjectReportSection(): string {
     out.push('', '### Weitere Meeting-Protokolle');
     for (const note of unmatchedNotes) {
       out.push(`- **${note.id}:** ${note.discussed}`);
-      const noteDecisions = lines(note.decisions);
-      if (noteDecisions.length > 0) out.push(...noteDecisions.map((entry) => `  - Entscheidung: ${entry}`));
-      const noteTasks = lines(note.tasks);
-      if (noteTasks.length > 0) out.push(...noteTasks.map((entry) => `  - Aufgabe: ${entry}`));
+      const noteDecisions = noteItems(note.decisions, note);
+      if (noteDecisions.length > 0) out.push(...noteDecisions.map((entry) => `  - Entscheidung: ${entry.split('\n').join('\n    ')}`));
+      const noteTasks = noteItems(note.tasks, note);
+      if (noteTasks.length > 0) out.push(...noteTasks.map((entry) => `  - Aufgabe: ${entry.split('\n').join('\n    ')}`));
     }
   }
 

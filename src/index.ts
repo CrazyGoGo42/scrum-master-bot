@@ -21,6 +21,7 @@ import {
 } from 'discord.js';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
+import { itemsAsBullets, parseItems } from './text-items.js';
 import { currentWeekRange, formatDate, formatTime, isWorkday, nowBerlin } from './utils/dates.js';
 
 type TeamMember = (typeof config.members)[number];
@@ -137,12 +138,7 @@ function normalizeYesNo(value: string): string {
 }
 
 function linesAsBullets(value: string): string {
-  return value
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean)
-    .map((line) => `- ${line}`)
-    .join('\n');
+  return itemsAsBullets(value);
 }
 
 function previousWorkday(date: DateTime): DateTime {
@@ -329,14 +325,14 @@ function questionOneModal(draft?: DailyDraft): ModalBuilder {
   return new ModalBuilder()
     .setCustomId('daily:q1')
     .setTitle('Daily Scrum • Frage 1/4')
-    .addComponents(textarea('answer', label, 'Kurz und konkret: Was hast du erledigt?', draft?.previous));
+    .addComponents(textarea('answer', label, 'Kurz und konkret. Mehrere Punkte: jeder mit - am Zeilenanfang', draft?.previous));
 }
 
 function questionTwoModal(draft?: DailyDraft): ModalBuilder {
   return new ModalBuilder()
     .setCustomId('daily:q2')
     .setTitle('Daily Scrum • Frage 2/4')
-    .addComponents(textarea('answer', 'Was möchtest du heute machen?', 'Plane deinen Arbeitstag.', draft?.today));
+    .addComponents(textarea('answer', 'Was möchtest du heute machen?', 'Plane deinen Arbeitstag. Mehrere Punkte: jeder mit - am Zeilenanfang', draft?.today));
 }
 
 function blockerModal(draft?: DailyDraft): ModalBuilder {
@@ -347,7 +343,7 @@ function blockerModal(draft?: DailyDraft): ModalBuilder {
       textarea(
         'answer',
         'Welche Probleme oder Blocker hast du?',
-        'Was hält dich aktuell auf?',
+        'Was hält dich auf? Mehrere Blocker: jeder mit - am Zeilenanfang',
         draft?.blocker === 'Keine' ? undefined : draft?.blocker
       )
     );
@@ -453,10 +449,7 @@ function section(content: string, names: string[]): string[] {
 
   if (!match) return [];
 
-  return match[1]
-    .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean);
+  return parseItems(match[1]);
 }
 
 function isCompleteDailyContent(content: string): boolean {
