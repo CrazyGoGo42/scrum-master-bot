@@ -4,6 +4,7 @@ import path from 'node:path';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
 import { bulletList, parseItems } from './text-items.js';
+import { keepUnreadableFile } from './utils/state-files.js';
 
 type StoredMeeting = {
   messageId: string;
@@ -88,6 +89,7 @@ function readJson<T>(filePath: string, fallback: T): T {
     return JSON.parse(readFileSync(filePath, 'utf8')) as T;
   } catch (error) {
     console.error(`[Weekly] Datei konnte nicht gelesen werden: ${filePath}`, error);
+    keepUnreadableFile(filePath);
     return fallback;
   }
 }

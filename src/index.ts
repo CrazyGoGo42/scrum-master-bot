@@ -10,6 +10,7 @@ import {
   Events,
   ForumChannel,
   GatewayIntentBits,
+  Message,
   MessageFlags,
   ModalBuilder,
   ModalSubmitInteraction,
@@ -21,6 +22,8 @@ import {
 } from 'discord.js';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
+import { DailyDraftStore } from './daily-drafts.js';
+import { createDailyThread, readDaily, rewriteDaily } from './daily-parts.js';
 import { itemsAsBullets, parseItems } from './text-items.js';
 import { currentWeekRange, formatDate, formatTime, isWorkday, nowBerlin } from './utils/dates.js';
 import { splitDiscordText } from './utils/discord-text.js';
@@ -65,7 +68,8 @@ type AbsenceScanResult = {
   unavailableMemberIds: Set<string>;
 };
 
-const drafts = new Map<string, DailyDraft>();
+// Überstehen Neustarts: angefangene Antworten werden in data/daily-drafts.json gespeichert.
+const drafts = new DailyDraftStore<DailyDraft>();
 
 const DAILY_TEMPLATE = `## Seit dem letzten Daily
 - Was habe ich seit dem letzten Daily gemacht?
@@ -443,6 +447,17 @@ async function starterContent(thread: ThreadChannel): Promise<string> {
   }
 }
 
+// Lange Dailies stehen in mehreren Teilen (siehe daily-parts.ts); gelesen wird immer der vollständige Text.
+async function dailyContent(thread: ThreadChannel): Promise<string> {
+  let starter: Message | null;
+  try {
+    starter = await thread.fetchStarterMessage();
+  } catch {
+    return '';
+  }
+  return starter ? (await readDaily(thread, starter)).content : '';
+}
+
 function section(content: string, names: string[]): string[] {
   const escaped = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
   const regex = new RegExp(`(?:^|\\n)#{1,3}\\s*(?:${escaped})\\s*\\n([\\s\\S]*?)(?=\\n#{1,3}\\s|$)`, 'i');
@@ -516,7 +531,7 @@ async function dailyEntriesForMemberInRange(
     const createdAt = toBerlin(thread.createdAt);
     if (createdAt < start || createdAt > end) continue;
 
-    const content = await starterContent(thread);
+    const content = await dailyContent(thread);
     if (!isCompleteDailyContent(content)) continue;
 
     entries.push({
@@ -1115,15 +1130,13 @@ async function createDailyFromDraft(draft: DailyDraft): Promise<ThreadChannel> {
   const needsPush = normalizeYesNo(draft.pushPending ?? 'Nein') === 'Ja';
   const createdAt = nowBerlin();
 
-  return forum.threads.create({
-    name: dailyPostTitle(member, createdAt),
-    message: {
-      content: `**Daily erstellt:** ${formatTime(createdAt)} Uhr\n\n${draftContent(draft)}`,
-      components: needsPush ? [pushDoneRow(draft.userId)] : [],
-      allowedMentions: { parse: [] }
-    },
-    reason: `Daily Scrum von ${member.name}`
-  });
+  return createDailyThread(
+    forum,
+    dailyPostTitle(member, createdAt),
+    `**Daily erstellt:** ${formatTime(createdAt)} Uhr\n\n${draftContent(draft)}`,
+    needsPush ? [pushDoneRow(draft.userId)] : [],
+    `Daily Scrum von ${member.name}`
+  );
 }
 
 function absenceContent(kind: AbsenceKind, detail: string | undefined, date = nowBerlin()): string {
@@ -1408,11 +1421,21 @@ async function showPreviewFromButton(interaction: ButtonInteraction, draft: Dail
     return;
   }
 
+  // Ein langes Daily passt nicht in eine Nachricht: Vorschau auf mehrere verteilen, Buttons unter den letzten Teil.
+  const [first, ...rest] = splitDiscordText(previewText(draft));
   await interaction.update({
-    content: previewText(draft),
-    components: [previewButtons()],
+    content: first,
+    components: rest.length === 0 ? [previewButtons()] : [],
     allowedMentions: { parse: [] }
   });
+  for (const [index, chunk] of rest.entries()) {
+    await interaction.followUp({
+      content: chunk,
+      components: index === rest.length - 1 ? [previewButtons()] : [],
+      allowedMentions: { parse: [] },
+      flags: MessageFlags.Ephemeral
+    });
+  }
 }
 
 async function handlePushDoneButton(interaction: ButtonInteraction): Promise<void> {
@@ -1442,11 +1465,9 @@ async function handlePushDoneButton(interaction: ButtonInteraction): Promise<voi
     return;
   }
 
-  if (!hasPushDone(starter.content)) {
-    await starter.edit({
-      content: `${starter.content}\n\n${PUSH_DONE_MARKER} · ${formatDate()} ${formatTime(nowBerlin())} Uhr`,
-      components: []
-    });
+  const post = await readDaily(thread, starter);
+  if (!hasPushDone(post.content)) {
+    await rewriteDaily(thread, post, `${post.content}\n\n${PUSH_DONE_MARKER} · ${formatDate()} ${formatTime(nowBerlin())} Uhr`, []);
   }
 
   if (interaction.message.id !== starter.id) {
@@ -1543,6 +1564,7 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   if (interaction.customId === 'daily:blocker-none') {
     draft.blocker = 'Keine';
     await interaction.showModal(questionFourModal(draft));
+    await drafts.touch(interaction.user.id);
     return;
   }
 
@@ -1558,12 +1580,14 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
 
   if (interaction.customId === 'daily:push-no') {
     draft.pushPending = 'Nein';
+    await drafts.touch(interaction.user.id);
     await showPreviewFromButton(interaction, draft);
     return;
   }
 
   if (interaction.customId === 'daily:push-yes') {
     draft.pushPending = 'Ja';
+    await drafts.touch(interaction.user.id);
     await showPreviewFromButton(interaction, draft);
     return;
   }
@@ -1603,11 +1627,12 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
     } catch (error) {
       console.error(`[Daily] Daily für ${memberName(interaction.user.id)} konnte nicht veröffentlicht werden.`, error);
       const member = teamMember(interaction.user.id);
+      // Der Entwurf bleibt erhalten: Absenden kann direkt noch einmal versucht werden.
       await interaction.editReply({
         content:
-          `❌ Dein Daily konnte nicht veröffentlicht werden. ` +
-          `Das für dich konfigurierte Forum${member ? ` (${member.dailyForumId})` : ''} ist nicht erreichbar oder kein Discord-Forum.`,
-        components: []
+          `❌ Dein Daily konnte nicht veröffentlicht werden. Deine Antworten sind gespeichert, versuche es gleich noch einmal mit **Daily absenden**. ` +
+          `Klappt es weiterhin nicht, prüft bitte, ob das für dich konfigurierte Forum${member ? ` (${member.dailyForumId})` : ''} erreichbar ist.`,
+        components: [previewButtons()]
       });
     }
   }
@@ -1718,6 +1743,7 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
 
   if (interaction.customId === 'daily:q1') {
     draft.previous = interaction.fields.getTextInputValue('answer').trim();
+    await drafts.touch(interaction.user.id);
     await interaction.reply({
       content: `✅ **Frage 1/4 beantwortet**\n\n**Deine Antwort:**\n${draft.previous}\n\nWeiter mit Frage 2:`,
       components: [nextButton('daily:next-q2', 'Weiter zu Frage 2')],
@@ -1728,6 +1754,7 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
 
   if (interaction.customId === 'daily:q2') {
     draft.today = interaction.fields.getTextInputValue('answer').trim();
+    await drafts.touch(interaction.user.id);
     await interaction.reply({
       content:
         `✅ **Frage 2/4 beantwortet**\n\n**Deine Antwort:**\n${draft.today}\n\n` +
@@ -1740,6 +1767,7 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
 
   if (interaction.customId === 'daily:q3') {
     draft.blocker = interaction.fields.getTextInputValue('answer').trim();
+    await drafts.touch(interaction.user.id);
     await interaction.reply({
       content: `✅ **Frage 3/4 beantwortet**\n\n**Blocker:**\n${draft.blocker}\n\nWeiter mit der letzten Frage:`,
       components: [nextButton('daily:next-q4', 'Weiter zu Frage 4')],
@@ -1750,6 +1778,7 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
 
   if (interaction.customId === 'daily:q4') {
     draft.branch = interaction.fields.getTextInputValue('branch').trim();
+    await drafts.touch(interaction.user.id);
     await interaction.reply({
       content:
         `✅ **Branch gespeichert:** \`${draft.branch}\`\n\n` +

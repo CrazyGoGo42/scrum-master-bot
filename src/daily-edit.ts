@@ -16,10 +16,14 @@ import {
 } from 'discord.js';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
+import { readDaily, rewriteDaily } from './daily-parts.js';
 import { itemsAsBullets, itemsForEditing, parseItems } from './text-items.js';
 import { trackDailyBlockers } from './project-tools.js';
+import { splitDiscordText } from './utils/discord-text.js';
 
 const PUSH_DONE_MARKER = '**Push-Status:** ✅ Erledigt';
+// Höchstlänge eines Discord-Textfelds im Formular.
+const MODAL_TEXT_LIMIT = 4000;
 let installed = false;
 
 function nowBerlin(): DateTime {
@@ -53,6 +57,7 @@ function linesAsBullets(value: string): string {
   return itemsAsBullets(value, '-');
 }
 
+// Der vorhandene Text wird nie gekürzt: ist er länger als üblich, darf das Feld entsprechend mehr fassen.
 function modalInput(
   id: string,
   label: string,
@@ -66,17 +71,23 @@ function modalInput(
       .setLabel(label)
       .setStyle(style)
       .setRequired(true)
-      .setMaxLength(maxLength)
-      .setValue(value.slice(0, maxLength))
+      .setMaxLength(Math.max(maxLength, value.length))
+      .setValue(value)
   );
 }
 
+function editFields(content: string) {
+  return {
+    previous: section(content, 'Seit dem letzten Daily') || section(content, 'Gestern'),
+    today: section(content, 'Heute'),
+    blocker: section(content, 'Blocker') || 'Keine',
+    branch: content.match(/^- Branch:\s*(.+)$/im)?.[1]?.trim() || '-',
+    pushPending: content.match(/^- Noch zu pushen:\s*(Ja|Nein)$/im)?.[1] || 'Nein'
+  };
+}
+
 function editModal(threadId: string, content: string): ModalBuilder {
-  const previous = section(content, 'Seit dem letzten Daily') || section(content, 'Gestern');
-  const today = section(content, 'Heute');
-  const blocker = section(content, 'Blocker') || 'Keine';
-  const branch = content.match(/^- Branch:\s*(.+)$/im)?.[1]?.trim() || '-';
-  const pushPending = content.match(/^- Noch zu pushen:\s*(Ja|Nein)$/im)?.[1] || 'Nein';
+  const { previous, today, blocker, branch, pushPending } = editFields(content);
 
   return new ModalBuilder()
     .setCustomId(`daily-edit:${threadId}`)
@@ -144,7 +155,28 @@ async function handleCommand(client: Client, interaction: ChatInputCommandIntera
     return;
   }
 
-  await interaction.showModal(editModal(thread.id, starter.content));
+  const { content } = await readDaily(thread, starter);
+  if (Object.values(editFields(content)).some((value) => value.length > MODAL_TEXT_LIMIT)) {
+    await interaction.reply({
+      content: `❌ Ein Abschnitt deines Dailys ist länger als ${MODAL_TEXT_LIMIT} Zeichen und passt nicht ins Formular. Bitte bearbeite es direkt im Thread: <#${thread.id}>`,
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  await interaction.showModal(editModal(thread.id, content));
+}
+
+// Kann nicht gespeichert werden, bekommt die Person ihre Eingaben zurück, damit nichts verloren geht.
+async function replyWithInput(interaction: ModalSubmitInteraction, reason: string, fields: Record<string, string>): Promise<void> {
+  const text =
+    `❌ ${reason} Hier sind deine Eingaben zum Kopieren, starte danach **/daily-bearbeiten** erneut.\n\n` +
+    Object.entries(fields)
+      .map(([label, value]) => `**${label}**\n\`\`\`text\n${value}\n\`\`\``)
+      .join('\n');
+  const [first, ...rest] = splitDiscordText(text);
+  await interaction.editReply(first);
+  for (const chunk of rest) await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
 }
 
 async function handleModal(client: Client, interaction: ModalSubmitInteraction): Promise<void> {
@@ -154,66 +186,70 @@ async function handleModal(client: Client, interaction: ModalSubmitInteraction):
     return;
   }
 
-  const threadId = interaction.customId.slice('daily-edit:'.length);
-  const channel = await client.channels.fetch(threadId);
-  if (!channel?.isThread()) {
-    await interaction.reply({ content: '❌ Der Daily-Thread wurde nicht gefunden.', flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  const member = teamMember(interaction.user.id);
-  if (!member || channel.parentId !== member.dailyForumId) {
-    await interaction.reply({ content: '⛔ Dieses Daily gehört nicht zu dir.', flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  const starter = await channel.fetchStarterMessage();
-  if (!starter) {
-    await interaction.reply({ content: '❌ Der Daily-Startbeitrag konnte nicht gefunden werden.', flags: MessageFlags.Ephemeral });
-    return;
-  }
+  // Ein Daily in mehreren Teilen braucht mehrere Discord-Aufrufe; ohne Aufschub wäre die 3-Sekunden-Frist schnell vorbei.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const previous = interaction.fields.getTextInputValue('previous').trim();
   const today = interaction.fields.getTextInputValue('today').trim();
   const blocker = interaction.fields.getTextInputValue('blocker').trim();
   const branch = interaction.fields.getTextInputValue('branch').trim();
-  const pushRaw = interaction.fields.getTextInputValue('push').trim().toLocaleLowerCase('de-DE');
+  const pushRaw = interaction.fields.getTextInputValue('push').trim();
+  const input = { 'Seit dem letzten Daily': previous, Heute: today, Blocker: blocker, Branch: branch, 'Noch zu pushen': pushRaw };
 
-  if (!['ja', 'nein'].includes(pushRaw)) {
-    await interaction.reply({ content: '❌ Bei „Noch zu pushen?“ bitte nur **Ja** oder **Nein** eintragen.', flags: MessageFlags.Ephemeral });
+  if (!/^(ja|nein|j|n|yes|no)$/i.test(pushRaw)) {
+    await replyWithInput(interaction, 'Bei „Noch zu pushen?“ bitte nur **Ja** oder **Nein** eintragen.', input);
     return;
   }
 
-  const pushPending = pushRaw === 'ja' ? 'Ja' : 'Nein';
-  const createdLine = starter.content.match(/^\*\*Daily erstellt:\*\*[^\n]*/m)?.[0] ?? `**Daily erstellt:** ${formatTime()} Uhr`;
-  const pushDoneLine = starter.content
-    .split('\n')
-    .find((line) => line.startsWith(PUSH_DONE_MARKER));
+  const threadId = interaction.customId.slice('daily-edit:'.length);
+  const channel = await client.channels.fetch(threadId).catch(() => null);
+  if (!channel?.isThread()) {
+    await replyWithInput(interaction, 'Der Daily-Thread wurde nicht gefunden.', input);
+    return;
+  }
 
-  const content =
-    `${createdLine}\n\n` +
-    `## Seit dem letzten Daily\n${linesAsBullets(previous)}\n\n` +
-    `## Heute\n${linesAsBullets(today)}\n\n` +
-    `## Blocker\n${/^keine$/i.test(blocker) ? 'Keine' : linesAsBullets(blocker)}\n\n` +
-    `## Branch / Git\n- Branch: ${branch}\n- Noch zu pushen: ${pushPending}\n\n` +
-    `**Zuletzt bearbeitet:** ${formatDate()} ${formatTime()} Uhr` +
-    (pushDoneLine ? `\n${pushDoneLine}` : '');
+  const member = teamMember(interaction.user.id);
+  if (!member || channel.parentId !== member.dailyForumId) {
+    await interaction.editReply('⛔ Dieses Daily gehört nicht zu dir.');
+    return;
+  }
 
-  const showPushButton = pushPending === 'Ja' && !pushDoneLine;
-  await starter.edit({
-    content,
-    components: showPushButton ? [pushRow(interaction.user.id)] : []
-  });
+  try {
+    const starter = await channel.fetchStarterMessage();
+    if (!starter) throw new Error(`Startbeitrag von ${channel.id} fehlt.`);
+    const post = await readDaily(channel, starter);
+
+    const pushPending = /^(ja|j|yes)$/i.test(pushRaw) ? 'Ja' : 'Nein';
+    const createdLine = post.content.match(/^\*\*Daily erstellt:\*\*[^\n]*/m)?.[0] ?? `**Daily erstellt:** ${formatTime()} Uhr`;
+    const pushDoneLine = post.content
+      .split('\n')
+      .find((line) => line.startsWith(PUSH_DONE_MARKER));
+
+    const content =
+      `${createdLine}\n\n` +
+      `## Seit dem letzten Daily\n${linesAsBullets(previous)}\n\n` +
+      `## Heute\n${linesAsBullets(today)}\n\n` +
+      `## Blocker\n${/^keine$/i.test(blocker) ? 'Keine' : linesAsBullets(blocker)}\n\n` +
+      `## Branch / Git\n- Branch: ${branch}\n- Noch zu pushen: ${pushPending}\n\n` +
+      `**Zuletzt bearbeitet:** ${formatDate()} ${formatTime()} Uhr` +
+      (pushDoneLine ? `\n${pushDoneLine}` : '');
+
+    const showPushButton = pushPending === 'Ja' && !pushDoneLine;
+    await rewriteDaily(channel, post, content, showPushButton ? [pushRow(interaction.user.id)] : []);
+  } catch (error) {
+    console.error('[Daily bearbeiten] Daily konnte nicht gespeichert werden.', error);
+    await replyWithInput(interaction, 'Dein Daily konnte nicht gespeichert werden.', input);
+    return;
+  }
+
   await trackDailyBlockers(interaction.user.id, blocker, channel.id).catch((error) =>
     console.error('[Daily bearbeiten] Blocker konnten nicht aktualisiert werden.', error)
   );
 
-  await interaction.reply({
-    content:
-      `✅ Dein heutiges Daily wurde aktualisiert: <#${channel.id}>\n` +
-      `_Hinweis: Bereits freiwillig ins Aufgabenboard übernommene Tasks werden dadurch nicht automatisch verändert._`,
-    flags: MessageFlags.Ephemeral
-  });
+  await interaction.editReply(
+    `✅ Dein heutiges Daily wurde aktualisiert: <#${channel.id}>\n` +
+      `_Hinweis: Bereits freiwillig ins Aufgabenboard übernommene Tasks werden dadurch nicht automatisch verändert._`
+  );
 }
 
 export const dailyEditCommand = new SlashCommandBuilder()

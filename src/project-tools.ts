@@ -22,6 +22,7 @@ import { DateTime } from 'luxon';
 import { config } from './config.js';
 import { parseItems, singleLine } from './text-items.js';
 import { splitDiscordText } from './utils/discord-text.js';
+import { keepUnreadableFile } from './utils/state-files.js';
 
 type TaskStatus = 'todo' | 'doing' | 'done';
 type BlockerStatus = 'open' | 'resolved';
@@ -133,6 +134,7 @@ async function loadState(): Promise<ProjectState> {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
           console.error('[Projekttools] Projektstatus konnte nicht gelesen werden.', error);
+          keepUnreadableFile(statePath);
         }
         return cloneEmptyState();
       }
@@ -667,15 +669,16 @@ async function handleMeetingModal(interaction: ModalSubmitInteraction): Promise<
   state.meetingNotes.push(note);
   await saveState(state);
 
-  await interaction.reply({
-    content:
-      `## 📝 Meeting-Protokoll ${note.id}\n` +
+  // Drei Felder à 1000 Zeichen passen nicht in eine Nachricht: das Protokoll notfalls auf mehrere verteilen.
+  const [first, ...rest] = splitDiscordText(
+    `## 📝 Meeting-Protokoll ${note.id}\n` +
       `**Dokumentiert von:** <@${interaction.user.id}>\n\n` +
       `### Besprochen\n${discussed}\n\n` +
       `### Entscheidungen\n${decisions || 'Keine eingetragen.'}\n\n` +
-      `### Aufgaben\n${tasks || 'Keine eingetragen.'}`,
-    allowedMentions: { users: [interaction.user.id] }
-  });
+      `### Aufgaben\n${tasks || 'Keine eingetragen.'}`
+  );
+  await interaction.reply({ content: first, allowedMentions: { users: [interaction.user.id] } });
+  for (const chunk of rest) await interaction.followUp({ content: chunk, allowedMentions: { parse: [] } });
 }
 
 export function installProjectTools(client: Client): void {

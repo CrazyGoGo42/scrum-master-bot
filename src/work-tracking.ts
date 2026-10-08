@@ -16,6 +16,7 @@ import path from 'node:path';
 import { DateTime } from 'luxon';
 import cron from 'node-cron';
 import { config } from './config.js';
+import { keepUnreadableFile } from './utils/state-files.js';
 
 type SessionProvenance = 'daily' | 'clock' | 'manual-exact' | 'manual-estimated';
 
@@ -106,6 +107,7 @@ function readStateSync(): WorkState {
     };
   } catch (error) {
     console.error('[Arbeitszeit] Status konnte nicht gelesen werden.', error);
+    keepUnreadableFile(statePath);
     return freshState();
   }
 }

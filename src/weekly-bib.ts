@@ -569,21 +569,37 @@ type TableColumn = { title: string; width: number; align?: 'left' | 'center' | '
 
 const WIN_ANSI_EXTRA = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
 
-// Die PDF-Standardschriften kennen nur WinAnsi. Pfeile werden übersetzt,
-// Emojis und andere nicht darstellbare Zeichen entfernt.
+const LETTERS_WITHOUT_ACCENT: Record<string, string> = { ł: 'l', Ł: 'L', đ: 'd', Đ: 'D', ı: 'i' };
+
+function winAnsi(char: string): boolean {
+  const code = char.codePointAt(0) ?? 0;
+  return (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff) || WIN_ANSI_EXTRA.includes(char);
+}
+
+// Die PDF-Standardschriften kennen nur WinAnsi. Damit kein Text verloren geht, werden Pfeile, Vergleichs-
+// zeichen und Häkchen umschrieben und Buchstaben mit fremden Akzenten (ă, ạ, ő …) auf den Grundbuchstaben
+// zurückgeführt. Nur Emojis und Zeichen ohne lesbare Entsprechung werden entfernt.
 function pdfText(value: string): string {
   return value
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/__(.+?)__/g, '$1')
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
+    .replace(/\t/g, ' ')
+    .replace(/[↔⇔]/g, '<->')
     .replace(/[→⇒➜➔]/g, '->')
     .replace(/[←⇐]/g, '<-')
     .replace(/[‐-‒−]/g, '-')
+    .replace(/≥/g, '>=')
+    .replace(/≤/g, '<=')
+    .replace(/≠/g, '!=')
+    .replace(/≈/g, '~')
+    .replace(/[✓✔☑✅]/gu, '[x]')
+    .replace(/[łŁđĐı]/g, (char) => LETTERS_WITHOUT_ACCENT[char] ?? char)
     .replace(/./gu, (char) => {
-      const code = char.codePointAt(0) ?? 0;
-      const printable = (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff) || WIN_ANSI_EXTRA.includes(char);
-      return printable ? char : '';
+      if (winAnsi(char)) return char;
+      const base = char.normalize('NFKD').replace(/\p{M}/gu, '');
+      return base && [...base].every(winAnsi) ? base : '';
     })
     .replace(/ {2,}/g, ' ')
     .replace(/ +([,.;:!?)])/g, '$1')
