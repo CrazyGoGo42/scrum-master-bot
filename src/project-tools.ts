@@ -21,6 +21,7 @@ import path from 'node:path';
 import { DateTime } from 'luxon';
 import { config } from './config.js';
 import { parseItems, singleLine } from './text-items.js';
+import { splitDiscordText } from './utils/discord-text.js';
 
 type TaskStatus = 'todo' | 'doing' | 'done';
 type BlockerStatus = 'open' | 'resolved';
@@ -399,11 +400,26 @@ export async function importDailyBlockers(
   if (changed) await saveState(state);
 }
 
+// Die Liste hängt an der /daily-Antwort (max. 2000 Zeichen): nur ganze Blocker, solange sie hineinpassen.
+const SUMMARY_LIST_LIMIT = 1400;
+
 export async function openBlockersSummary(ownerId: string): Promise<string> {
   const state = await loadState();
   const open = state.blockers.filter((blocker) => blocker.ownerId === ownerId && blocker.status === 'open');
   if (open.length === 0) return '';
-  return `\n\n🧱 **Noch offene Blocker:**\n${open.map((blocker) => `• ${blocker.id} · ${blocker.text}`).join('\n')}\n_Lösen kannst du sie jederzeit mit \`/blocker lösen\`._`;
+
+  const lines: string[] = [];
+  let length = 0;
+  for (const blocker of open) {
+    const line = `• ${blocker.id} · ${blocker.text}`;
+    if (lines.length > 0 && length + line.length + 1 > SUMMARY_LIST_LIMIT) break;
+    lines.push(line);
+    length += line.length + 1;
+  }
+  const more = open.length - lines.length;
+  if (more > 0) lines.push(`_… und ${more} weitere, alle zeigt \`/blocker offen\`._`);
+
+  return `\n\n🧱 **Noch offene Blocker:**\n${lines.join('\n')}\n_Lösen kannst du sie jederzeit mit \`/blocker lösen\`._`;
 }
 
 export async function createScheduledMeeting(
@@ -494,6 +510,13 @@ export const projectCommands = [
     )
 ].map((command) => command.toJSON());
 
+// Lange Listen auf mehrere Nachrichten verteilen statt sie abzuschneiden.
+async function replyEphemeralInChunks(interaction: ChatInputCommandInteraction, text: string): Promise<void> {
+  const [first, ...rest] = splitDiscordText(text);
+  await interaction.reply({ content: first, flags: MessageFlags.Ephemeral });
+  for (const chunk of rest) await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
+}
+
 async function requireTeam(interaction: ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction): Promise<boolean> {
   if (isTeamMember(interaction.user.id)) return true;
   await interaction.reply({
@@ -529,7 +552,7 @@ async function handleBlockerCommand(interaction: ChatInputCommandInteraction): P
     const text = open.length
       ? open.map((blocker) => `• **${blocker.id}** ${blocker.text} · ${memberName(blocker.ownerId)}${blocker.taskId ? ` · ${blocker.taskId}` : ''}`).join('\n')
       : 'Keine offenen Blocker. 🎉';
-    await interaction.reply({ content: `# Offene Blocker\n${text}`.slice(0, 1900), flags: MessageFlags.Ephemeral });
+    await replyEphemeralInChunks(interaction, `# Offene Blocker\n${text}`);
     return;
   }
 
@@ -589,7 +612,7 @@ async function handleDecisionCommand(interaction: ChatInputCommandInteraction): 
   const text = latest.length
     ? latest.map((entry) => `• **${entry.id} · ${entry.title}** · ${entry.decision} · ${memberName(entry.authorId)}`).join('\n')
     : 'Noch keine Entscheidungen dokumentiert.';
-  await interaction.reply({ content: `# Entscheidungslog\n${text}`.slice(0, 1900), flags: MessageFlags.Ephemeral });
+  await replyEphemeralInChunks(interaction, `# Entscheidungslog\n${text}`);
 }
 
 async function handleMeetingButton(interaction: ButtonInteraction): Promise<void> {

@@ -23,6 +23,7 @@ import { DateTime } from 'luxon';
 import { config } from './config.js';
 import { itemsAsBullets, parseItems } from './text-items.js';
 import { currentWeekRange, formatDate, formatTime, isWorkday, nowBerlin } from './utils/dates.js';
+import { splitDiscordText } from './utils/discord-text.js';
 
 type TeamMember = (typeof config.members)[number];
 type AbsenceKind = 'Krankheit' | 'Termin' | 'Anderes';
@@ -1006,43 +1007,6 @@ function buildWeeklyReport(
   );
 
   return report.join('\n');
-}
-
-function splitDiscordText(text: string, maxLength = 1900): string[] {
-  if (text.length <= maxLength) return [text];
-
-  const chunks: string[] = [];
-  let current = '';
-
-  for (const block of text.split('\n\n')) {
-    const candidate = current ? `${current}\n\n${block}` : block;
-
-    if (candidate.length <= maxLength) {
-      current = candidate;
-      continue;
-    }
-
-    if (current) chunks.push(current);
-
-    if (block.length <= maxLength) {
-      current = block;
-      continue;
-    }
-
-    current = '';
-    for (const line of block.split('\n')) {
-      const lineCandidate = current ? `${current}\n${line}` : line;
-      if (lineCandidate.length <= maxLength) {
-        current = lineCandidate;
-      } else {
-        if (current) chunks.push(current);
-        current = line.slice(0, maxLength);
-      }
-    }
-  }
-
-  if (current) chunks.push(current);
-  return chunks;
 }
 
 async function weeklyScans(): Promise<{
