@@ -240,6 +240,7 @@ function meetingSummary(meeting: MeetingEntry): string {
   ];
   if (meeting.rescheduledFrom) lines.push(`Verschoben, ursprünglich: ${berlin(meeting.rescheduledFrom).toFormat('dd.MM.yyyy HH:mm')} Uhr`);
   if (meeting.status === 'cancelled') lines.push('🚫 **Abgesagt** (steht so im Wochenbericht)');
+  if (meeting.status === 'cancelled' && meeting.cancelReason) lines.push(`Grund: ${meeting.cancelReason}`);
   return lines.join('\n');
 }
 
@@ -248,7 +249,7 @@ async function updateMeetingPost(message: Message, meeting: MeetingEntry | undef
   const base = message.content.split(MEETING_STATUS_MARKER)[0];
   let status: string;
   if (!meeting) status = ' 🗑️ Gelöscht. Dieses Meeting erscheint nicht im Wochenbericht.';
-  else if (meeting.status === 'cancelled') status = ' 🚫 **Abgesagt.**';
+  else if (meeting.status === 'cancelled') status = ` 🚫 **Abgesagt.**${meeting.cancelReason ? `\n**Grund:** ${meeting.cancelReason}` : ''}`;
   else {
     const start = Math.floor(berlin(meeting.startAt).toSeconds());
     status =
@@ -313,13 +314,24 @@ async function handleMeetingEditButton(interaction: ButtonInteraction): Promise<
     return;
   }
 
-  if (action === 'cancel' || action === 'restore') {
-    const updated = await setMeetingCancelled(messageId, action === 'cancel');
+  // Absagen fragt nach einem freiwilligen Grund; leer lassen ist erlaubt.
+  if (action === 'cancel') {
+    await interaction.showModal(
+      new ModalBuilder()
+        .setCustomId(`project:meeting-cancel:${messageId}`)
+        .setTitle('Meeting absagen')
+        .addComponents(modalInput('reason', 'Grund (optional)', TextInputStyle.Paragraph, 'z. B. Kunde hat abgesagt', false, 300))
+    );
+    return;
+  }
+
+  if (action === 'restore') {
+    const updated = await setMeetingCancelled(messageId, false);
     const post = await meetingPost(interaction, messageId);
     if (post && updated) await updateMeetingPost(post, updated);
     await interaction.update({
       content: updated
-        ? `${action === 'cancel' ? '🚫 Meeting abgesagt.' : '↩️ Absage zurückgenommen.'}\n\n${meetingSummary(updated)}`
+        ? `↩️ Absage zurückgenommen.\n\n${meetingSummary(updated)}`
         : '❌ Das Meeting wurde nicht gefunden.',
       components: updated ? [meetingEditRow(updated)] : []
     });
@@ -819,6 +831,18 @@ async function handleMeetingButton(interaction: ButtonInteraction): Promise<void
 
 async function handleMeetingModal(interaction: ModalSubmitInteraction): Promise<void> {
   const messageId = interaction.customId.split(':').at(-1) ?? 'unbekannt';
+
+  if (interaction.customId.startsWith('project:meeting-cancel:')) {
+    const updated = await setMeetingCancelled(messageId, true, interaction.fields.getTextInputValue('reason'));
+    if (!updated) {
+      await interaction.reply({ content: '❌ Das Meeting wurde nicht gefunden.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const post = await meetingPost(interaction, messageId);
+    if (post) await updateMeetingPost(post, updated);
+    await interaction.reply({ content: `🚫 Meeting abgesagt.\n\n${meetingSummary(updated)}`, components: [meetingEditRow(updated)], flags: MessageFlags.Ephemeral });
+    return;
+  }
 
   if (interaction.customId.startsWith('project:meeting-change:')) {
     await handleMeetingChangeModal(interaction, messageId);

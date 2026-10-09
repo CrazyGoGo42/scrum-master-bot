@@ -42,6 +42,7 @@ type StoredMeeting = {
   venueLabel: string;
   participantIds?: string[];
   status?: 'cancelled';
+  cancelReason?: string;
   rescheduledFrom?: string;
 };
 
@@ -439,6 +440,7 @@ function renderMarkdown(week: WeekData): string {
         : config.members.map((member) => member.name).join(', ');
       out.push('', `### ${meeting.title}${meeting.status === 'cancelled' ? ' (abgesagt)' : ''}`);
       if (meeting.status === 'cancelled') out.push('**Status:** Abgesagt, das Meeting hat nicht stattgefunden.');
+      if (meeting.status === 'cancelled' && meeting.cancelReason) out.push(`**Grund:** ${meeting.cancelReason}`);
       out.push(`**Datum / Uhrzeit:** ${formatDate(meetingStart)} · ${meetingStart.toFormat('HH:mm')} Uhr`);
       if (meeting.rescheduledFrom) out.push(`**Verschoben:** ursprünglich geplant für ${movedFrom(meeting)}`);
       out.push(`**Ort:** ${meeting.venueLabel}`);
@@ -1011,6 +1013,7 @@ function drawMeetings(pdf: Pdf, week: WeekData): void {
     const entry = startGridEntry(pdf, shortDate(start), time, 30);
     drawGridRow(pdf, 'Thema', meeting.title, { bold: true });
     if (meeting.status === 'cancelled') drawGridRow(pdf, 'Status', 'Abgesagt, hat nicht stattgefunden', { labelColor: ALERT, textColor: ALERT, bold: true });
+    if (meeting.status === 'cancelled' && meeting.cancelReason) drawGridRow(pdf, 'Grund', meeting.cancelReason);
     if (meeting.rescheduledFrom) drawGridRow(pdf, 'Verschoben', `ursprünglich ${movedFrom(meeting)}`, { labelColor: ALERT });
     drawGridRow(pdf, 'Ort', meeting.venueLabel);
     drawGridRow(pdf, 'Teilnehmer', participants);

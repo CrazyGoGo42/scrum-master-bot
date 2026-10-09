@@ -21,6 +21,7 @@ type StoredMeeting = {
   createdAt: string;
   // Über „Bearbeiten“ am Meeting-Post: abgesagt bzw. ursprünglicher Termin vor einer Verschiebung.
   status?: 'cancelled';
+  cancelReason?: string;
   rescheduledFrom?: string;
 };
 
@@ -153,12 +154,13 @@ export async function updateMeeting(messageId: string, update: MeetingChange): P
   return result;
 }
 
-export async function setMeetingCancelled(messageId: string, cancelled: boolean): Promise<StoredMeeting | undefined> {
+export async function setMeetingCancelled(messageId: string, cancelled: boolean, reason?: string): Promise<StoredMeeting | undefined> {
   let result: StoredMeeting | undefined;
   await changeMeetingHistory((history) => {
     const meeting = history.meetings.find((entry) => entry.messageId === messageId);
     if (!meeting) return false;
     meeting.status = cancelled ? 'cancelled' : undefined;
+    meeting.cancelReason = cancelled ? reason?.trim() || undefined : undefined;
     result = { ...meeting };
     return true;
   });
