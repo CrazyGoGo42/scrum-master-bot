@@ -19,6 +19,9 @@ type StoredMeeting = {
   participantIds?: string[];
   scheduledEventUrl?: string;
   createdAt: string;
+  // Über „Bearbeiten“ am Meeting-Post: abgesagt bzw. ursprünglicher Termin vor einer Verschiebung.
+  status?: 'cancelled';
+  rescheduledFrom?: string;
 };
 
 type MeetingHistory = {
@@ -103,6 +106,72 @@ async function writeMeetingHistory(history: MeetingHistory): Promise<void> {
     await fs.rename(temporary, meetingHistoryPath);
   });
   await meetingWriteQueue;
+}
+
+export type MeetingChange = { title: string; start: DateTime; end: DateTime; venueLabel: string };
+
+export function findMeeting(messageId: string): StoredMeeting | undefined {
+  return readJson<MeetingHistory>(meetingHistoryPath, { meetings: [] }).meetings.find((meeting) => meeting.messageId === messageId);
+}
+
+// Änderungen laufen über dieselbe Warteschlange wie das Speichern, damit sich zwei Klicks nicht überschreiben.
+async function changeMeetingHistory(change: (history: MeetingHistory) => boolean): Promise<boolean> {
+  let changed = false;
+  const run = meetingWriteQueue.catch(() => undefined).then(async () => {
+    const history = readJson<MeetingHistory>(meetingHistoryPath, { meetings: [] });
+    changed = change(history);
+    if (!changed) return;
+    await fs.mkdir(path.dirname(meetingHistoryPath), { recursive: true });
+    const temporary = `${meetingHistoryPath}.tmp`;
+    await fs.writeFile(temporary, `${JSON.stringify(history, null, 2)}\n`, 'utf8');
+    await fs.rename(temporary, meetingHistoryPath);
+  });
+  meetingWriteQueue = run;
+  await run;
+  return changed;
+}
+
+/** Ändert Titel, Zeit oder Ort. Bei neuer Startzeit bleibt der allererste Termin als „verschoben von“ erhalten. */
+export async function updateMeeting(messageId: string, update: MeetingChange): Promise<StoredMeeting | undefined> {
+  let result: StoredMeeting | undefined;
+  await changeMeetingHistory((history) => {
+    const meeting = history.meetings.find((entry) => entry.messageId === messageId);
+    if (!meeting) return false;
+    const startAt = update.start.toISO() ?? update.start.toJSDate().toISOString();
+    const moved = DateTime.fromISO(meeting.startAt).toMillis() !== update.start.toMillis();
+    if (moved) meeting.rescheduledFrom ??= meeting.startAt;
+    if (meeting.rescheduledFrom && DateTime.fromISO(meeting.rescheduledFrom).toMillis() === update.start.toMillis()) {
+      meeting.rescheduledFrom = undefined;
+    }
+    meeting.title = update.title.trim();
+    meeting.startAt = startAt;
+    meeting.endAt = update.end.toISO() ?? update.end.toJSDate().toISOString();
+    meeting.venueLabel = update.venueLabel.trim();
+    result = { ...meeting };
+    return true;
+  });
+  return result;
+}
+
+export async function setMeetingCancelled(messageId: string, cancelled: boolean): Promise<StoredMeeting | undefined> {
+  let result: StoredMeeting | undefined;
+  await changeMeetingHistory((history) => {
+    const meeting = history.meetings.find((entry) => entry.messageId === messageId);
+    if (!meeting) return false;
+    meeting.status = cancelled ? 'cancelled' : undefined;
+    result = { ...meeting };
+    return true;
+  });
+  return result;
+}
+
+/** Entfernt das Meeting aus der Historie; es erscheint dann in keinem Wochenbericht. */
+export async function deleteMeeting(messageId: string): Promise<boolean> {
+  return changeMeetingHistory((history) => {
+    const before = history.meetings.length;
+    history.meetings = history.meetings.filter((entry) => entry.messageId !== messageId);
+    return history.meetings.length !== before;
+  });
 }
 
 export async function recordMeeting(input: MeetingRecordInput): Promise<void> {

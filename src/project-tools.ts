@@ -6,6 +6,7 @@ import {
   ButtonStyle,
   ChatInputCommandInteraction,
   Client,
+  Message,
   Events,
   GuildScheduledEventEntityType,
   GuildScheduledEventPrivacyLevel,
@@ -23,6 +24,7 @@ import { config } from './config.js';
 import { parseItems, singleLine } from './text-items.js';
 import { splitDiscordText } from './utils/discord-text.js';
 import { keepUnreadableFile } from './utils/state-files.js';
+import { deleteMeeting, findMeeting, setMeetingCancelled, updateMeeting } from './weekly-project.js';
 
 type TaskStatus = 'todo' | 'doing' | 'done';
 type BlockerStatus = 'open' | 'resolved';
@@ -194,8 +196,188 @@ export function meetingActionRow(): ActionRowBuilder<ButtonBuilder> {
       .setCustomId('project:meeting:decision')
       .setLabel('Entscheidung')
       .setEmoji('📌')
-      .setStyle(ButtonStyle.Success)
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('project:meeting:edit')
+      .setLabel('Bearbeiten')
+      .setEmoji('✏️')
+      .setStyle(ButtonStyle.Secondary)
   );
+}
+
+// ---------------------------------------------------------------------------
+// Meeting bearbeiten: verschieben/ändern, absagen oder löschen (vor dem Wochenbericht).
+// ---------------------------------------------------------------------------
+
+type MeetingEntry = NonNullable<ReturnType<typeof findMeeting>>;
+
+const MEETING_STATUS_MARKER = '\n\n**📣 Aktueller Stand:**';
+
+function berlin(iso: string): DateTime {
+  return DateTime.fromISO(iso, { zone: config.timezone });
+}
+
+function meetingEditRow(meeting: MeetingEntry): ActionRowBuilder<ButtonBuilder> {
+  const id = meeting.messageId;
+  const cancelled = meeting.status === 'cancelled';
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`project:meeting:change:${id}`).setLabel('Zeit, Titel oder Ort ändern').setEmoji('🕘').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`project:meeting:${cancelled ? 'restore' : 'cancel'}:${id}`)
+      .setLabel(cancelled ? 'Absage zurücknehmen' : 'Absagen')
+      .setEmoji(cancelled ? '↩️' : '🚫')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`project:meeting:delete:${id}`).setLabel('Löschen').setEmoji('🗑️').setStyle(ButtonStyle.Danger)
+  );
+}
+
+function meetingSummary(meeting: MeetingEntry): string {
+  const start = berlin(meeting.startAt);
+  const end = berlin(meeting.endAt);
+  const lines = [
+    `**${meeting.title}**`,
+    `${start.setLocale('de').toFormat('ccc dd.MM.yyyy')} · ${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')} Uhr · ${meeting.venueLabel}`
+  ];
+  if (meeting.rescheduledFrom) lines.push(`Verschoben, ursprünglich: ${berlin(meeting.rescheduledFrom).toFormat('dd.MM.yyyy HH:mm')} Uhr`);
+  if (meeting.status === 'cancelled') lines.push('🚫 **Abgesagt** (steht so im Wochenbericht)');
+  return lines.join('\n');
+}
+
+// Der Meeting-Post bekommt unten einen Block mit dem aktuellen Stand; der ursprüngliche Text bleibt stehen.
+async function updateMeetingPost(message: Message, meeting: MeetingEntry | undefined): Promise<void> {
+  const base = message.content.split(MEETING_STATUS_MARKER)[0];
+  let status: string;
+  if (!meeting) status = ' 🗑️ Gelöscht. Dieses Meeting erscheint nicht im Wochenbericht.';
+  else if (meeting.status === 'cancelled') status = ' 🚫 **Abgesagt.**';
+  else {
+    const start = Math.floor(berlin(meeting.startAt).toSeconds());
+    status =
+      ` ✏️ Geändert\n**Thema:** ${meeting.title}\n**Start:** <t:${start}:F> · <t:${start}:R>\n` +
+      `**Ende:** ${berlin(meeting.endAt).toFormat('HH:mm')} Uhr\n**Ort:** ${meeting.venueLabel}` +
+      (meeting.rescheduledFrom ? `\n_Verschoben, ursprünglich ${berlin(meeting.rescheduledFrom).toFormat('dd.MM.yyyy HH:mm')} Uhr._` : '');
+  }
+  await message.edit({
+    content: `${base}${MEETING_STATUS_MARKER}${status}`,
+    // Gelöscht: keine Aktionen mehr, sonst landen Protokolle bei einem Meeting, das es nicht mehr gibt.
+    ...(meeting ? {} : { components: [] }),
+    allowedMentions: { parse: [] }
+  });
+}
+
+async function meetingPost(interaction: ButtonInteraction | ModalSubmitInteraction, messageId: string): Promise<Message | undefined> {
+  return interaction.channel?.messages.fetch(messageId).catch(() => undefined);
+}
+
+function meetingChangeModal(meeting: MeetingEntry): ModalBuilder {
+  const start = berlin(meeting.startAt);
+  const minutes = Math.max(1, Math.round(berlin(meeting.endAt).diff(start, 'minutes').minutes));
+  const input = (id: string, label: string, value: string, maxLength: number) =>
+    new ActionRowBuilder<TextInputBuilder>().addComponents(
+      new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(maxLength).setValue(value)
+    );
+  return new ModalBuilder()
+    .setCustomId(`project:meeting-change:${meeting.messageId}`)
+    .setTitle('Meeting ändern')
+    .addComponents(
+      input('title', 'Titel', meeting.title.slice(0, 100), 100),
+      input('date', 'Datum (TT.MM.JJJJ)', start.toFormat('dd.MM.yyyy'), 10),
+      input('time', 'Uhrzeit (HH:MM)', start.toFormat('HH:mm'), 5),
+      input('duration', 'Dauer in Minuten', String(minutes), 3),
+      input('venue', 'Ort', meeting.venueLabel.slice(0, 100), 100)
+    );
+}
+
+async function handleMeetingEditButton(interaction: ButtonInteraction): Promise<void> {
+  const [, , action, idFromButton] = interaction.customId.split(':');
+  const messageId = action === 'edit' ? interaction.message.id : idFromButton;
+  const meeting = findMeeting(messageId);
+  if (!meeting) {
+    await interaction.reply({
+      content: '❌ Dieses Meeting ist nicht (mehr) in der Meeting-Historie gespeichert und taucht im Wochenbericht ohnehin nicht auf.',
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  if (action === 'edit') {
+    await interaction.reply({
+      content: `### ✏️ Meeting bearbeiten\n${meetingSummary(meeting)}\n\nWas möchtest du ändern?`,
+      components: [meetingEditRow(meeting)],
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  if (action === 'change') {
+    await interaction.showModal(meetingChangeModal(meeting));
+    return;
+  }
+
+  if (action === 'cancel' || action === 'restore') {
+    const updated = await setMeetingCancelled(messageId, action === 'cancel');
+    const post = await meetingPost(interaction, messageId);
+    if (post && updated) await updateMeetingPost(post, updated);
+    await interaction.update({
+      content: updated
+        ? `${action === 'cancel' ? '🚫 Meeting abgesagt.' : '↩️ Absage zurückgenommen.'}\n\n${meetingSummary(updated)}`
+        : '❌ Das Meeting wurde nicht gefunden.',
+      components: updated ? [meetingEditRow(updated)] : []
+    });
+    return;
+  }
+
+  if (action === 'delete') {
+    await interaction.update({
+      content: `### 🗑️ Wirklich löschen?\n${meetingSummary(meeting)}\n\nDas Meeting erscheint danach in keinem Wochenbericht. Wurde es nur abgesagt, nimm lieber **Absagen**, dann steht die Absage im Bericht.`,
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setCustomId(`project:meeting:delete-confirm:${messageId}`).setLabel('Ja, löschen').setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId(`project:meeting:edit-back:${messageId}`).setLabel('Zurück').setStyle(ButtonStyle.Secondary)
+        )
+      ]
+    });
+    return;
+  }
+
+  if (action === 'edit-back') {
+    await interaction.update({ content: `### ✏️ Meeting bearbeiten\n${meetingSummary(meeting)}`, components: [meetingEditRow(meeting)] });
+    return;
+  }
+
+  if (action === 'delete-confirm') {
+    await deleteMeeting(messageId);
+    const post = await meetingPost(interaction, messageId);
+    if (post) await updateMeetingPost(post, undefined);
+    await interaction.update({ content: `🗑️ **${meeting.title}** wurde gelöscht und erscheint nicht im Wochenbericht.`, components: [] });
+  }
+}
+
+async function handleMeetingChangeModal(interaction: ModalSubmitInteraction, messageId: string): Promise<void> {
+  const title = interaction.fields.getTextInputValue('title').trim();
+  const date = interaction.fields.getTextInputValue('date').trim();
+  const time = interaction.fields.getTextInputValue('time').trim();
+  const duration = Number(interaction.fields.getTextInputValue('duration').trim());
+  const venueLabel = interaction.fields.getTextInputValue('venue').trim();
+  const start = DateTime.fromFormat(`${date} ${time}`, 'dd.MM.yyyy HH:mm', { zone: config.timezone, locale: 'de' });
+
+  if (!title || !venueLabel || !start.isValid || !Number.isInteger(duration) || duration < 10 || duration > 480) {
+    await interaction.reply({
+      content:
+        '❌ Bitte Datum als **TT.MM.JJJJ**, Uhrzeit als **HH:MM** und Dauer zwischen **10 und 480 Minuten** angeben. ' +
+        `Deine Eingaben: ${title} · ${date} ${time} · ${interaction.fields.getTextInputValue('duration')} min · ${venueLabel}`,
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  const updated = await updateMeeting(messageId, { title, start, end: start.plus({ minutes: duration }), venueLabel });
+  if (!updated) {
+    await interaction.reply({ content: '❌ Das Meeting wurde nicht gefunden.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const post = await meetingPost(interaction, messageId);
+  if (post) await updateMeetingPost(post, updated);
+  await interaction.reply({ content: `✅ Meeting geändert.\n\n${meetingSummary(updated)}`, flags: MessageFlags.Ephemeral });
 }
 
 function modalInput(
@@ -618,6 +800,10 @@ async function handleDecisionCommand(interaction: ChatInputCommandInteraction): 
 }
 
 async function handleMeetingButton(interaction: ButtonInteraction): Promise<void> {
+  if (/^project:meeting:(edit|change|cancel|restore|delete|delete-confirm|edit-back)(:|$)/.test(interaction.customId)) {
+    await handleMeetingEditButton(interaction);
+    return;
+  }
   if (interaction.customId === 'project:meeting:protocol') {
     await interaction.showModal(meetingProtocolModal(interaction.message.id));
     return;
@@ -633,6 +819,11 @@ async function handleMeetingButton(interaction: ButtonInteraction): Promise<void
 
 async function handleMeetingModal(interaction: ModalSubmitInteraction): Promise<void> {
   const messageId = interaction.customId.split(':').at(-1) ?? 'unbekannt';
+
+  if (interaction.customId.startsWith('project:meeting-change:')) {
+    await handleMeetingChangeModal(interaction, messageId);
+    return;
+  }
 
   if (interaction.customId.startsWith('project:meeting-task:')) {
     const task = await addTask(interaction.user.id, interaction.fields.getTextInputValue('title'), 'todo', 'meeting');
@@ -681,9 +872,31 @@ async function handleMeetingModal(interaction: ModalSubmitInteraction): Promise<
   for (const chunk of rest) await interaction.followUp({ content: chunk, allowedMentions: { parse: [] } });
 }
 
+// Ältere Meeting-Posts haben noch keinen „Bearbeiten“-Button: beim Start in der Aktionsleiste ergänzen.
+async function addEditButtonToOldMeetings(client: Client): Promise<void> {
+  const channel = await client.channels.fetch(config.meetingCreateChannelId);
+  if (!channel?.isTextBased() || !('messages' in channel)) return;
+  const messages = await channel.messages.fetch({ limit: 100 });
+  for (const message of messages.values()) {
+    if (message.author.id !== client.user?.id) continue;
+    const ids = message.components.flatMap((row) => ('components' in row ? row.components.map((c) => ('customId' in c ? c.customId : null)) : []));
+    if (!ids.includes('project:meeting:protocol') || ids.includes('project:meeting:edit')) continue;
+    const rows = message.components.map((row) =>
+      'components' in row && row.components.some((c) => 'customId' in c && c.customId === 'project:meeting:protocol')
+        ? meetingActionRow()
+        : ActionRowBuilder.from<ButtonBuilder>(row as never)
+    );
+    await message.edit({ components: rows }).catch((error) => console.error(`[Meeting] Button für ${message.id} nicht ergänzt.`, error));
+  }
+}
+
 export function installProjectTools(client: Client): void {
   if (installed) return;
   installed = true;
+
+  client.once(Events.ClientReady, () => {
+    void addEditButtonToOldMeetings(client).catch((error) => console.error('[Meeting] Alte Meetings nicht aktualisiert.', error));
+  });
 
   client.on(Events.InteractionCreate, (interaction) => {
     void (async () => {

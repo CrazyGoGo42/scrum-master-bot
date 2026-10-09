@@ -41,6 +41,8 @@ type StoredMeeting = {
   agenda?: string;
   venueLabel: string;
   participantIds?: string[];
+  status?: 'cancelled';
+  rescheduledFrom?: string;
 };
 
 type MeetingNote = {
@@ -149,6 +151,11 @@ function section(content: string, names: string[]): string[] {
 // Ältere Protokolle (ohne listStyle) hatten einen Punkt pro Zeile.
 function noteItems(value: string | undefined, note: MeetingNote): string[] {
   return parseItems(value, note.listStyle !== 'dash');
+}
+
+function movedFrom(meeting: StoredMeeting): string {
+  const original = DateTime.fromISO(meeting.rescheduledFrom ?? '', { zone: config.timezone });
+  return original.isValid ? `${formatDate(original)}, ${original.toFormat('HH:mm')} Uhr` : 'anderer Termin';
 }
 
 function memberName(userId: string): string {
@@ -430,8 +437,10 @@ function renderMarkdown(week: WeekData): string {
       const participants = meeting.participantIds?.length
         ? meeting.participantIds.map(memberName).join(', ')
         : config.members.map((member) => member.name).join(', ');
-      out.push('', `### ${meeting.title}`);
+      out.push('', `### ${meeting.title}${meeting.status === 'cancelled' ? ' (abgesagt)' : ''}`);
+      if (meeting.status === 'cancelled') out.push('**Status:** Abgesagt, das Meeting hat nicht stattgefunden.');
       out.push(`**Datum / Uhrzeit:** ${formatDate(meetingStart)} · ${meetingStart.toFormat('HH:mm')} Uhr`);
+      if (meeting.rescheduledFrom) out.push(`**Verschoben:** ursprünglich geplant für ${movedFrom(meeting)}`);
       out.push(`**Ort:** ${meeting.venueLabel}`);
       out.push(`**Teilnehmer / eingeladenes Team:** ${participants}`);
       if (meeting.agenda?.trim()) out.push(`**Agenda:** ${meeting.agenda.trim()}`);
@@ -1001,6 +1010,8 @@ function drawMeetings(pdf: Pdf, week: WeekData): void {
 
     const entry = startGridEntry(pdf, shortDate(start), time, 30);
     drawGridRow(pdf, 'Thema', meeting.title, { bold: true });
+    if (meeting.status === 'cancelled') drawGridRow(pdf, 'Status', 'Abgesagt, hat nicht stattgefunden', { labelColor: ALERT, textColor: ALERT, bold: true });
+    if (meeting.rescheduledFrom) drawGridRow(pdf, 'Verschoben', `ursprünglich ${movedFrom(meeting)}`, { labelColor: ALERT });
     drawGridRow(pdf, 'Ort', meeting.venueLabel);
     drawGridRow(pdf, 'Teilnehmer', participants);
     if (meeting.agenda?.trim()) drawGridRow(pdf, 'Agenda', meeting.agenda.trim());
