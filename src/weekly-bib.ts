@@ -1013,7 +1013,7 @@ function drawMeetings(pdf: Pdf, week: WeekData): void {
     const entry = startGridEntry(pdf, shortDate(start), time, 30);
     drawGridRow(pdf, 'Thema', meeting.title, { bold: true });
     if (meeting.status === 'cancelled') drawGridRow(pdf, 'Status', 'Abgesagt, hat nicht stattgefunden', { labelColor: ALERT, textColor: ALERT, bold: true });
-    if (meeting.status === 'cancelled' && meeting.cancelReason) drawGridRow(pdf, 'Grund', meeting.cancelReason);
+    if (meeting.status === 'cancelled' && meeting.cancelReason) drawGridRow(pdf, '', `Grund: ${meeting.cancelReason}`, { textColor: ALERT }); // unter „Abgesagt“, gehört zur Absage
     if (meeting.rescheduledFrom) drawGridRow(pdf, 'Verschoben', `ursprünglich ${movedFrom(meeting)}`, { labelColor: ALERT });
     drawGridRow(pdf, 'Ort', meeting.venueLabel);
     drawGridRow(pdf, 'Teilnehmer', participants);
