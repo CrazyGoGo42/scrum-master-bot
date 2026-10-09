@@ -176,6 +176,17 @@ function durationMinutes(session: WorkSession): number | undefined {
   return Math.max(0, Math.round(end.diff(start, 'minutes').minutes) - pause - stopMinutes(session));
 }
 
+// Zwischenstand beim Pausieren: Beginn, bisherige Pausen und bisherige Arbeitszeit bis zu `at`.
+function interimSummary(session: WorkSession, at: DateTime): string {
+  const pause = recalculatePauseMinutes(session);
+  const work = durationMinutes({ ...session, endAt: at.toISO() ?? new Date().toISOString() }) ?? 0;
+  return (
+    `**Start:** ${parseIso(session.startAt).toFormat('HH:mm')} Uhr\n` +
+    `**Pause bisher:** ${pause} min\n` +
+    `**Arbeitszeit bisher:** ${durationText(work)}`
+  );
+}
+
 function durationText(minutes: number): string {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
@@ -377,7 +388,9 @@ async function pauseFromClock(interaction: ButtonInteraction): Promise<void> {
   const activePause = openPause(session);
   if (activePause) {
     await interaction.reply({
-      content: `⏸️ Du bist bereits seit **${parseIso(activePause.startAt).toFormat('HH:mm')} Uhr** in Pause.`,
+      content:
+        `⏸️ Du bist bereits seit **${parseIso(activePause.startAt).toFormat('HH:mm')} Uhr** in Pause.\n\n` +
+        interimSummary(session, parseIso(activePause.startAt)),
       components: [resumeRow(session.id)],
       flags: MessageFlags.Ephemeral
     });
@@ -391,7 +404,9 @@ async function pauseFromClock(interaction: ButtonInteraction): Promise<void> {
   await saveState(state);
 
   await interaction.reply({
-    content: `⏸️ **Pause gestartet: ${now.toFormat('HH:mm')} Uhr.**\nWenn du wieder da bist, drück **Weitermachen**.`,
+    content:
+      `⏸️ **Pause gestartet: ${now.toFormat('HH:mm')} Uhr.**\n\n${interimSummary(session, now)}\n\n` +
+      'Wenn du wieder da bist, drück **Weitermachen**.',
     components: [resumeRow(session.id)],
     flags: MessageFlags.Ephemeral
   });
