@@ -720,7 +720,29 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
   }
 
   if (end <= start) end = end.plus({ days: 1 });
-  const keepPauses = pauseInput === null && Boolean(session?.pauses?.length);
+
+  // Unterbrechung wie mit Stop/Start: zwei Arbeitsblöcke, die Lücke zählt weder als Arbeit noch als Pause.
+  const gapFromRaw = interaction.options.getString('unterbrechung_von')?.trim();
+  const gapToRaw = interaction.options.getString('unterbrechung_bis')?.trim();
+  let gap: { from: DateTime; to: DateTime } | undefined;
+  if (gapFromRaw || gapToRaw) {
+    const at = (raw: string | undefined): DateTime => {
+      const time = DateTime.fromFormat(`${dateRaw} ${raw ?? ''}`, 'dd.MM.yyyy HH:mm', { zone: config.timezone, locale: 'de' });
+      return time.isValid && time < start ? time.plus({ days: 1 }) : time;
+    };
+    const from = at(gapFromRaw);
+    let to = at(gapToRaw);
+    if (to.isValid && from.isValid && to <= from) to = to.plus({ days: 1 });
+    if (!gapFromRaw || !gapToRaw || !from.isValid || !to.isValid || from <= start || to >= end) {
+      await interaction.reply({
+        content: '❌ Für eine Unterbrechung bitte **unterbrechung_von** und **unterbrechung_bis** als HH:MM angeben, beide zwischen Start und Ende.',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+    gap = { from, to };
+  }
+  const keepPauses = !gap && pauseInput === null && Boolean(session?.pauses?.length);
 
   const now = nowBerlin();
   if (start > now || end > now.plus({ minutes: 2 })) {
@@ -734,10 +756,28 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
     return;
   }
   const activePause = session && keepPauses ? openPause(session) : undefined;
-  const pause = pauseInput ?? (session && keepPauses ? recordedPauseMinutes(session, end) : pauseInput === null && session ? Math.max(0, session.pauseMinutes ?? 0) : 0);
-  if (pause < 0 || pause >= gross) {
+  const pause = gap
+    ? (pauseInput ?? 0)
+    : pauseInput ?? (session && keepPauses ? recordedPauseMinutes(session, end) : pauseInput === null && session ? Math.max(0, session.pauseMinutes ?? 0) : 0);
+  const gapMinutes = gap ? Math.round(gap.to.diff(gap.from, 'minutes').minutes) : 0;
+  if (pause < 0 || pause >= gross - gapMinutes) {
     await interaction.reply({ content: '❌ Die Pausenzeit ist für diesen Zeitraum ungültig.', flags: MessageFlags.Ephemeral });
     return;
+  }
+
+  // Mit Unterbrechung werden Pause und Lücke als Intervalle gespeichert; die Pause liegt im ersten Block, der sie fasst.
+  let gapIntervals: PauseInterval[] | undefined;
+  if (gap) {
+    const iso = (time: DateTime): string => time.toISO() ?? time.toJSDate().toISOString();
+    const pauseStart = start.plus({ minutes: pause }) <= gap.from ? start : gap.to;
+    if (pauseStart.plus({ minutes: pause }) > (pauseStart === start ? gap.from : end)) {
+      await interaction.reply({ content: '❌ Die Pause ist länger als jeder der beiden Arbeitsblöcke.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    gapIntervals = [
+      ...(pause > 0 ? [{ startAt: iso(pauseStart), endAt: iso(pauseStart.plus({ minutes: pause })) }] : []),
+      { startAt: iso(gap.from), endAt: iso(gap.to), kind: 'stop' as const }
+    ];
   }
 
   const date = sessionDate(start);
@@ -753,7 +793,7 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
       startAt: start.toISO() ?? start.toJSDate().toISOString(),
       endAt: end.toISO() ?? end.toJSDate().toISOString(),
       pauseMinutes: pause,
-      pauses: undefined,
+      pauses: gapIntervals,
       provenance,
       createdAt: nowIso,
       updatedAt: nowIso
@@ -768,7 +808,7 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
       recalculatePauseMinutes(session);
     } else {
       session.pauseMinutes = pause;
-      session.pauses = undefined;
+      session.pauses = gapIntervals;
     }
     session.stopped = undefined;
     if (startRaw) session.provenance = provenance;
@@ -781,7 +821,11 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
   const overnight = end.toISODate() !== start.toISODate();
   await interaction.reply({
     content:
-      `✅ Arbeitszeit für **${dateRaw}** gespeichert: ${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}${overnight ? ' Uhr am Folgetag' : ' Uhr'} · ` +
+      `✅ Arbeitszeit für **${dateRaw}** gespeichert: ` +
+      (gap
+        ? `${start.toFormat('HH:mm')}–${gap.from.toFormat('HH:mm')} und ${gap.to.toFormat('HH:mm')}–${end.toFormat('HH:mm')}`
+        : `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}`) +
+      `${overnight ? ' Uhr (Ende am Folgetag)' : ' Uhr'} · ` +
       `Pause ${pause} min · **${durationText(net)}**` +
       (provenance === 'manual-estimated' ? '\n_Diese Zeit ist ausdrücklich als geschätzt gekennzeichnet._' : ''),
     flags: MessageFlags.Ephemeral
@@ -928,6 +972,12 @@ export const workTrackingCommands = [
         )
         .addIntegerOption((option) =>
           option.setName('pause').setDescription('Leer lassen = erfasste Pausen bleiben. Sonst: gesamte Pause in Minuten').setMinValue(0).setMaxValue(720)
+        )
+        .addStringOption((option) =>
+          option.setName('unterbrechung_von').setDescription('Wie Stop: Arbeit unterbrochen ab HH:MM (zählt weder als Arbeit noch Pause)').setMaxLength(5)
+        )
+        .addStringOption((option) =>
+          option.setName('unterbrechung_bis').setDescription('Wie Start nach Stop: weitergearbeitet ab HH:MM').setMaxLength(5)
         )
         .addStringOption((option) =>
           option
