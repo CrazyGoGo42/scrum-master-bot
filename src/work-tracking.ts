@@ -7,8 +7,12 @@ import {
   Client,
   Events,
   MessageFlags,
+  ModalBuilder,
+  ModalSubmitInteraction,
   SlashCommandBuilder,
-  TextChannel
+  TextChannel,
+  TextInputBuilder,
+  TextInputStyle
 } from 'discord.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
@@ -26,6 +30,8 @@ type PauseInterval = {
   startAt: string;
   endAt?: string;
   kind?: 'stop';
+  // Pause zwischen dem echten Arbeitsbeginn und dem Klick auf Start (über „Start korrigieren“).
+  beforeStart?: boolean;
 };
 
 type WorkSession = {
@@ -268,8 +274,119 @@ function timePanelRow(): ActionRowBuilder<ButtonBuilder> {
       .setCustomId('work:clock:end')
       .setLabel('Ende')
       .setEmoji('🏁')
-      .setStyle(ButtonStyle.Danger)
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId('work:clock:correct')
+      .setLabel('Start korrigieren')
+      .setEmoji('✏️')
+      .setStyle(ButtonStyle.Secondary)
   );
+}
+
+// ---------------------------------------------------------------------------
+// Start korrigieren: früher angefangen als Start gedrückt? Beginn vorverlegen, die Erfassung läuft weiter.
+// ---------------------------------------------------------------------------
+
+function correctStartModal(session: WorkSession | undefined): ModalBuilder {
+  const before = (session?.pauses ?? []).filter((pause) => pause.beforeStart).reduce((sum, pause) => sum + intervalMinutes(pause), 0);
+  const start = new TextInputBuilder()
+    .setCustomId('start')
+    .setLabel('Wann hast du heute angefangen? (HH:MM)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(5)
+    .setPlaceholder('z. B. 07:23');
+  if (session) start.setValue(parseIso(session.startAt).toFormat('HH:mm'));
+  const pause = new TextInputBuilder()
+    .setCustomId('pause')
+    .setLabel('Pause bis zum Start-Klick? (Minuten)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setMaxLength(3)
+    .setPlaceholder('leer = keine');
+  if (before > 0) pause.setValue(String(before));
+  return new ModalBuilder()
+    .setCustomId('work:clock:correct-modal')
+    .setTitle('Arbeitsbeginn korrigieren')
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(start),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(pause)
+    );
+}
+
+async function correctStartFromClock(interaction: ButtonInteraction): Promise<void> {
+  if (!isTeamMember(interaction.user.id)) {
+    await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const session = todaysSession(await loadState(), interaction.user.id);
+  if (session?.endAt && !session.stopped) {
+    await interaction.reply({
+      content: 'ℹ️ Dein Arbeitstag ist schon beendet. Korrigieren kannst du ihn mit **/arbeitszeit nachtragen** (datum, start, ende).',
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+  await interaction.showModal(correctStartModal(session));
+}
+
+async function correctStartSubmit(interaction: ModalSubmitInteraction): Promise<void> {
+  const startRaw = interaction.fields.getTextInputValue('start').trim();
+  const pauseRaw = interaction.fields.getTextInputValue('pause').trim();
+  const now = nowBerlin();
+  const start = DateTime.fromFormat(`${now.toFormat('dd.MM.yyyy')} ${startRaw}`, 'dd.MM.yyyy H:mm', { zone: config.timezone, locale: 'de' });
+  const pause = pauseRaw ? Number(pauseRaw) : 0;
+
+  if (!start.isValid || start > now) {
+    await interaction.reply({ content: `❌ Bitte eine Uhrzeit von heute angeben, die nicht in der Zukunft liegt (z. B. \`07:23\`). Eingabe: ${startRaw}`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (!Number.isInteger(pause) || pause < 0) {
+    await interaction.reply({ content: `❌ Pause bitte als ganze Minuten angeben. Eingabe: ${pauseRaw}`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const state = await loadState();
+  let session = todaysSession(state, interaction.user.id);
+  const nowIso = now.toISO() ?? new Date().toISOString();
+  const startIso = start.toISO() ?? start.toJSDate().toISOString();
+
+  if (session?.endAt && !session.stopped) {
+    await interaction.reply({ content: 'ℹ️ Dein Arbeitstag ist schon beendet. Nutze **/arbeitszeit nachtragen**.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // Die Pause liegt direkt nach dem neuen Beginn und darf keine andere Pause und nicht die Gegenwart überschneiden.
+  const others = (session?.pauses ?? []).filter((interval) => !interval.beforeStart);
+  const firstOther = others.map((interval) => parseIso(interval.startAt)).sort((a, b) => a.toMillis() - b.toMillis())[0];
+  const limit = firstOther && firstOther < now ? firstOther : now;
+  if (start > limit || start.plus({ minutes: pause }) > limit) {
+    await interaction.reply({
+      content: `❌ Beginn plus Pause muss vor ${limit.toFormat('HH:mm')} Uhr liegen (deine erste erfasste Pause bzw. jetzt).`,
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  if (!session) {
+    session = { id: nextSessionId(state), userId: interaction.user.id, date: sessionDate(now), startAt: startIso, pauseMinutes: 0, pauses: [], provenance: 'clock', createdAt: nowIso, updatedAt: nowIso };
+    state.sessions.push(session);
+  }
+  session.startAt = startIso;
+  session.pauses = [
+    ...(pause > 0 ? [{ startAt: startIso, endAt: start.plus({ minutes: pause }).toISO() ?? startIso, beforeStart: true }] : []),
+    ...others
+  ];
+  recalculatePauseMinutes(session);
+  session.updatedAt = nowIso;
+  await saveState(state);
+
+  await interaction.reply({
+    content:
+      `✏️ **Arbeitsbeginn korrigiert.** Die Zeiterfassung läuft ab hier weiter.\n\n${interimSummary(session, now)}` +
+      (session.stopped ? '\n\n_Du bist gerade gestoppt. Mit **Start** geht es weiter._' : ''),
+    flags: MessageFlags.Ephemeral
+  });
 }
 
 function resumeRow(sessionId: string): ActionRowBuilder<ButtonBuilder> {
@@ -737,7 +854,8 @@ async function ensureTimePanel(client: Client): Promise<void> {
     `**Start** · Arbeitszeit beginnen oder nach einem Stop weitermachen\n` +
     `**Pause** · kurze Unterbrechung, zählt als Pause\n` +
     `**Stop** · aufhören und später am Tag weitermachen, die Zeit dazwischen zählt nicht\n` +
-    `**Ende** · Arbeitstag abschließen\n\n` +
+    `**Ende** · Arbeitstag abschließen\n` +
+    `**Start korrigieren** · früher angefangen, als du Start gedrückt hast? Beginn und Pause davor eintragen, die Erfassung läuft weiter\n\n` +
     `_Alle Klicks werden nur dir privat bestätigt. Der Channel selbst bleibt sauber._`;
 
   if (existing) {
@@ -946,6 +1064,15 @@ export function installWorkTracking(client: Client): void {
       }
       if (interaction.isButton() && interaction.customId === 'work:clock:stop') {
         await stopFromClock(interaction);
+        return;
+      }
+      if (interaction.isButton() && interaction.customId === 'work:clock:correct') {
+        await correctStartFromClock(interaction);
+        return;
+      }
+      if (interaction.isModalSubmit() && interaction.customId === 'work:clock:correct-modal') {
+        if (!isTeamMember(interaction.user.id)) return;
+        await correctStartSubmit(interaction);
         return;
       }
       if (interaction.isButton() && interaction.customId === 'work:clock:end') {
