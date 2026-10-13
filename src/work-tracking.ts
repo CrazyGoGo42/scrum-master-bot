@@ -156,6 +156,13 @@ function stopMinutes(session: WorkSession): number {
   return (session.pauses ?? []).filter((interval) => interval.kind === 'stop').reduce((sum, interval) => sum + intervalMinutes(interval), 0);
 }
 
+// Pausen eines Tages bis zum nachgetragenen Ende; eine offene Pause zählt bis dahin.
+function recordedPauseMinutes(session: WorkSession, end: DateTime): number {
+  return (session.pauses ?? [])
+    .filter((pause) => pause.kind !== 'stop')
+    .reduce((sum, pause) => sum + intervalMinutes({ ...pause, endAt: pause.endAt ?? end.toISO() ?? undefined }), 0);
+}
+
 function recalculatePauseMinutes(session: WorkSession): number {
   if (!session.pauses || session.pauses.length === 0) return Math.max(0, session.pauseMinutes ?? 0);
 
@@ -562,15 +569,26 @@ async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonI
 
 async function backfill(interaction: ChatInputCommandInteraction): Promise<void> {
   const dateRaw = interaction.options.getString('datum', true).trim();
-  const startRaw = interaction.options.getString('start', true).trim();
+  const startRaw = interaction.options.getString('start')?.trim();
   const endRaw = interaction.options.getString('ende', true).trim();
-  const pause = interaction.options.getInteger('pause') ?? 0;
+  const pauseInput = interaction.options.getInteger('pause');
   const quality = interaction.options.getString('qualität') ?? 'genau';
 
-  const start = DateTime.fromFormat(`${dateRaw} ${startRaw}`, 'dd.MM.yyyy HH:mm', {
-    zone: config.timezone,
-    locale: 'de'
-  });
+  // Nur das Ende angegeben: Start, Pausen und Stops des erfassten Tages bleiben, wie sie sind.
+  const day = DateTime.fromFormat(dateRaw, 'dd.MM.yyyy', { zone: config.timezone, locale: 'de' });
+  const state = await loadState();
+  let session = day.isValid ? state.sessions.find((entry) => entry.userId === interaction.user.id && entry.date === sessionDate(day)) : undefined;
+  if (!startRaw && !session) {
+    await interaction.reply({
+      content: '❌ Für diesen Tag ist noch kein Start erfasst. Bitte gib zusätzlich **start** an.',
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  const start = startRaw
+    ? DateTime.fromFormat(`${dateRaw} ${startRaw}`, 'dd.MM.yyyy HH:mm', { zone: config.timezone, locale: 'de' })
+    : parseIso(session!.startAt);
   let end = DateTime.fromFormat(`${dateRaw} ${endRaw}`, 'dd.MM.yyyy HH:mm', {
     zone: config.timezone,
     locale: 'de'
@@ -585,6 +603,7 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
   }
 
   if (end <= start) end = end.plus({ days: 1 });
+  const keepPauses = pauseInput === null && Boolean(session?.pauses?.length);
 
   const now = nowBerlin();
   if (start > now || end > now.plus({ minutes: 2 })) {
@@ -597,14 +616,15 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
     await interaction.reply({ content: '❌ Der Zeitraum muss zwischen 1 Minute und 36 Stunden liegen.', flags: MessageFlags.Ephemeral });
     return;
   }
+  const activePause = session && keepPauses ? openPause(session) : undefined;
+  const pause = pauseInput ?? (session && keepPauses ? recordedPauseMinutes(session, end) : pauseInput === null && session ? Math.max(0, session.pauseMinutes ?? 0) : 0);
   if (pause < 0 || pause >= gross) {
     await interaction.reply({ content: '❌ Die Pausenzeit ist für diesen Zeitraum ungültig.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const state = await loadState();
   const date = sessionDate(start);
-  let session = state.sessions.find((entry) => entry.userId === interaction.user.id && entry.date === date);
+  if (session && session.date !== date) session = undefined;
   const nowIso = now.toISO() ?? new Date().toISOString();
   const provenance: SessionProvenance = quality === 'geschätzt' ? 'manual-estimated' : 'manual-exact';
 
@@ -625,10 +645,16 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
   } else {
     session.startAt = start.toISO() ?? start.toJSDate().toISOString();
     session.endAt = end.toISO() ?? end.toJSDate().toISOString();
-    session.pauseMinutes = pause;
-    session.pauses = undefined;
+    if (keepPauses) {
+      // Eine noch offene Pause endet mit dem nachgetragenen Ende.
+      if (activePause) activePause.endAt = session.endAt;
+      recalculatePauseMinutes(session);
+    } else {
+      session.pauseMinutes = pause;
+      session.pauses = undefined;
+    }
     session.stopped = undefined;
-    session.provenance = provenance;
+    if (startRaw) session.provenance = provenance;
     session.updatedAt = nowIso;
     session.endReminderSentAt = undefined;
   }
@@ -638,7 +664,7 @@ async function backfill(interaction: ChatInputCommandInteraction): Promise<void>
   const overnight = end.toISODate() !== start.toISODate();
   await interaction.reply({
     content:
-      `✅ Arbeitszeit für **${dateRaw}** gespeichert: ${startRaw}–${endRaw}${overnight ? ' Uhr am Folgetag' : ' Uhr'} · ` +
+      `✅ Arbeitszeit für **${dateRaw}** gespeichert: ${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}${overnight ? ' Uhr am Folgetag' : ' Uhr'} · ` +
       `Pause ${pause} min · **${durationText(net)}**` +
       (provenance === 'manual-estimated' ? '\n_Diese Zeit ist ausdrücklich als geschätzt gekennzeichnet._' : ''),
     flags: MessageFlags.Ephemeral
@@ -747,8 +773,8 @@ async function remindMissingEnds(client: Client): Promise<void> {
     await raw.send({
       content:
         `⏰ <@${session.userId}> **für deine Arbeitszeit vom ${start.toFormat('dd.MM.yyyy')} fehlt noch das Ende.**\n` +
-        `Start war um **${start.toFormat('HH:mm')} Uhr**. Bitte trage das tatsächliche Ende mit **/arbeitszeit nachtragen** nach. ` +
-        `Wenn du nach Mitternacht aufgehört hast, gib einfach z. B. Start \`20:00\` und Ende \`01:15\` an. Der Bot versteht das Ende dann als Folgetag.`,
+        `Start war um **${start.toFormat('HH:mm')} Uhr**. Bitte trage mit **/arbeitszeit nachtragen** nur **datum** und **ende** nach, ` +
+        `Start und Pausen bleiben dann wie erfasst. Hast du nach Mitternacht aufgehört, gib z. B. Ende \`01:15\` an, das gilt dann als Folgetag.`,
       allowedMentions: { users: [session.userId] }
     });
     session.endReminderSentAt = todayKey;
@@ -776,11 +802,15 @@ export const workTrackingCommands = [
     .addSubcommand((sub) =>
       sub
         .setName('nachtragen')
-        .setDescription('Trägt eine vergangene Arbeitszeit nach, auch über Mitternacht')
+        .setDescription('Trägt ein fehlendes Ende oder eine ganze Arbeitszeit nach, auch über Mitternacht')
         .addStringOption((option) => option.setName('datum').setDescription('Startdatum TT.MM.JJJJ').setRequired(true).setMaxLength(10))
-        .addStringOption((option) => option.setName('start').setDescription('Start HH:MM').setRequired(true).setMaxLength(5))
         .addStringOption((option) => option.setName('ende').setDescription('Ende HH:MM; kleinere Uhrzeit = Folgetag').setRequired(true).setMaxLength(5))
-        .addIntegerOption((option) => option.setName('pause').setDescription('Gesamte Pause in Minuten').setMinValue(0).setMaxValue(720))
+        .addStringOption((option) =>
+          option.setName('start').setDescription('Nur nötig, wenn für den Tag noch kein Start erfasst ist oder er falsch ist').setMaxLength(5)
+        )
+        .addIntegerOption((option) =>
+          option.setName('pause').setDescription('Leer lassen = erfasste Pausen bleiben. Sonst: gesamte Pause in Minuten').setMinValue(0).setMaxValue(720)
+        )
         .addStringOption((option) =>
           option
             .setName('qualität')
