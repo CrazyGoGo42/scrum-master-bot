@@ -631,6 +631,84 @@ async function stopFromClock(interaction: ButtonInteraction): Promise<void> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Nachtabschaltung: Um 22:50 fragt der Bot alle, deren Arbeitszeit noch läuft, ob sie weiterarbeiten.
+// Die Antworten landen in data/night-shutdown.json; scripts/night-shutdown.sh liest sie jede Minute und
+// fährt den Server herunter, sobald niemand mehr arbeitet (Details in scripts/night-shutdown-check.mjs).
+// ---------------------------------------------------------------------------
+
+type NightState = { askedAt: string; waiting: string[]; staying: string[]; declined: string[] };
+
+const nightPath = process.env.NIGHT_SHUTDOWN_FILE || path.join(process.cwd(), 'data', 'night-shutdown.json');
+const NIGHT_ANSWER_MINUTES = 10;
+
+function readNight(): NightState | undefined {
+  if (!existsSync(nightPath)) return undefined;
+  try {
+    return JSON.parse(readFileSync(nightPath, 'utf8')) as NightState;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeNight(night: NightState): Promise<void> {
+  await fs.mkdir(path.dirname(nightPath), { recursive: true });
+  await fs.writeFile(`${nightPath}.tmp`, `${JSON.stringify(night, null, 2)}\n`, 'utf8');
+  await fs.rename(`${nightPath}.tmp`, nightPath);
+}
+
+function nightRow(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('work:night:yes').setLabel('Ja, ich arbeite noch').setEmoji('🌙').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('work:night:no').setLabel('Nein, Feierabend').setEmoji('🛌').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+async function askNightShutdown(client: Client): Promise<void> {
+  const now = nowBerlin();
+  const state = await loadState();
+  const working = [
+    ...new Set(state.sessions.filter((entry) => !entry.endAt && !forgottenEnd(parseIso(entry.startAt), now)).map((entry) => entry.userId))
+  ];
+  await writeNight({ askedAt: now.toISO() ?? new Date().toISOString(), waiting: working, staying: [], declined: [] });
+  if (working.length === 0) return;
+
+  const raw = await client.channels.fetch(config.timeTrackingChannelId);
+  if (!(raw instanceof TextChannel)) return;
+  await raw.send({
+    content:
+      `🌙 ${working.map((id) => `<@${id}>`).join(' ')} deine Arbeitszeit läuft noch. **Arbeitest du noch?**\n` +
+      `Ohne Antwort in ${NIGHT_ANSWER_MINUTES} Minuten fährt der Server um 23:00 Uhr herunter (er startet um 08:00 Uhr wieder). ` +
+      'Mit **Nein** wird deine Arbeitszeit jetzt beendet.',
+    components: [nightRow()],
+    allowedMentions: { users: working }
+  });
+}
+
+async function answerNightShutdown(interaction: ButtonInteraction, stays: boolean): Promise<void> {
+  const night = readNight();
+  const id = interaction.user.id;
+  if (!night || ![...night.waiting, ...night.staying].includes(id)) {
+    await interaction.reply({ content: 'ℹ️ Diese Frage gilt nicht (mehr) für dich.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  night.waiting = night.waiting.filter((entry) => entry !== id);
+  night.staying = night.staying.filter((entry) => entry !== id);
+  if (stays) night.staying.push(id);
+  else night.declined.push(id);
+  await writeNight(night);
+
+  if (stays) {
+    await interaction.reply({
+      content: '🌙 Alles klar. Der Server bleibt an, bis du **Ende** oder **Stop** drückst (spätestens bis 04:00 Uhr).',
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+  // Nein: Arbeitstag wie mit dem Ende-Button abschließen.
+  await endOpenSession(interaction);
+}
+
 async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
     await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
@@ -1093,6 +1171,11 @@ export function installWorkTracking(client: Client): void {
     void ensureTimePanel(client).catch((error) => console.error('[Arbeitszeit] Zeiterfassungs-Panel konnte nicht veröffentlicht werden.', error));
     void remindMissingEnds(client).catch((error) => console.error('[Arbeitszeit] Fehlende Endzeiten konnten nicht geprüft werden.', error));
     cron.schedule(
+      process.env.NIGHT_ASK_CRON || '50 22 * * *',
+      () => void askNightShutdown(client).catch((error) => console.error('[Arbeitszeit] Nachtabfrage fehlgeschlagen.', error)),
+      { timezone: config.timezone }
+    );
+    cron.schedule(
       config.cron.workEndReminder,
       () => void remindMissingEnds(client).catch((error) => console.error('[Arbeitszeit] Fehlende Endzeiten konnten nicht geprüft werden.', error)),
       { timezone: config.timezone }
@@ -1122,6 +1205,10 @@ export function installWorkTracking(client: Client): void {
       }
       if (interaction.isButton() && interaction.customId === 'work:clock:stop') {
         await stopFromClock(interaction);
+        return;
+      }
+      if (interaction.isButton() && (interaction.customId === 'work:night:yes' || interaction.customId === 'work:night:no')) {
+        await answerNightShutdown(interaction, interaction.customId === 'work:night:yes');
         return;
       }
       if (interaction.isButton() && interaction.customId === 'work:clock:correct') {

@@ -278,6 +278,26 @@ Logs:
 tail -f logs/bot.log
 ```
 
+## Nachtabschaltung mit Rückfrage
+
+Um 22:50 fragt der Bot im Zeiterfassungs-Channel alle, deren Arbeitszeit noch läuft: **Arbeitest du noch?**
+
+- **Nein, Feierabend:** Arbeitszeit wird beendet, der Server fährt innerhalb einer Minute herunter (wenn sonst niemand arbeitet).
+- **Ja, ich arbeite noch:** Der Server bleibt an, bis alle mit Ja **Ende** oder **Stop** gedrückt haben.
+- **Keine Antwort in 10 Minuten:** Der Server fährt um 23:00 herunter.
+- Spätestens um 04:00 fährt er in jedem Fall herunter. Geweckt wird um 08:00.
+
+Der Bot schreibt die Antworten nach `data/night-shutdown.json`; `scripts/night-shutdown.sh` prüft sie jede Minute. In `sudo crontab -e` (ersetzt den alten Eintrag `0 23 * * * /usr/local/sbin/night-shutdown.sh`):
+
+```cron
+51-59 22 * * * /home/gogo/Desktop/scrum-master-bot/scrum-master-bot/scripts/night-shutdown.sh
+* 23 * * * /home/gogo/Desktop/scrum-master-bot/scrum-master-bot/scripts/night-shutdown.sh
+* 0-3 * * * /home/gogo/Desktop/scrum-master-bot/scrum-master-bot/scripts/night-shutdown.sh
+0 4 * * * /home/gogo/Desktop/scrum-master-bot/scrum-master-bot/scripts/night-shutdown.sh
+```
+
+Läuft `node` über nvm, im Cron-Eintrag den vollen Pfad mitgeben, z. B. `NODE=/home/gogo/.nvm/versions/node/v22.x.x/bin/node /home/gogo/.../scripts/night-shutdown.sh`. Entscheidungen stehen im Systemlog: `journalctl -t night-shutdown -n 20`. Die Uhrzeit der Frage lässt sich mit `NIGHT_ASK_CRON` ändern.
+
 ## TODO
 
 - Voice-Teilnahme an Meetings protokollieren
