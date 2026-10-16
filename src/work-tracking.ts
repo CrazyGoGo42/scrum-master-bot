@@ -253,6 +253,14 @@ function todaysSession(state: WorkState, userId: string): WorkSession | undefine
   return state.sessions.find((entry) => entry.userId === userId && entry.date === todayKey);
 }
 
+// Arbeit über Mitternacht ist erlaubt. Erst wenn seit dem Start mehr als MAX_LIVE_HOURS vergangen sind,
+// gilt Ende als vergessen und muss nachgetragen werden, damit keine Nacht als Arbeitszeit zählt.
+const MAX_LIVE_HOURS = 16;
+
+function forgottenEnd(start: DateTime, now: DateTime): boolean {
+  return now.diff(start, 'hours').hours > MAX_LIVE_HOURS;
+}
+
 function timePanelRow(): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -592,11 +600,11 @@ async function stopFromClock(interaction: ButtonInteraction): Promise<void> {
 
   const start = parseIso(session.startAt);
   const now = nowBerlin();
-  if (start.toISODate() !== now.toISODate()) {
+  if (forgottenEnd(start, now)) {
     await interaction.reply({
       content:
-        `⚠️ Deine offene Arbeitszeit stammt vom **${start.toFormat('dd.MM.yyyy')} um ${start.toFormat('HH:mm')} Uhr**. ` +
-        'Damit wir nicht versehentlich die ganze Nacht als Arbeitszeit zählen, trage das tatsächliche Ende bitte mit **/arbeitszeit nachtragen** ein.',
+        `⚠️ Deine offene Arbeitszeit läuft seit **${start.toFormat('dd.MM.yyyy')} um ${start.toFormat('HH:mm')} Uhr**, also über ${MAX_LIVE_HOURS} Stunden. ` +
+        'Wahrscheinlich wurde **Ende** vergessen. Trage das tatsächliche Ende bitte mit **/arbeitszeit nachtragen** ein (nur datum und ende).',
       flags: MessageFlags.Ephemeral
     });
     return;
@@ -658,11 +666,11 @@ async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonI
 
   const start = parseIso(session.startAt);
   const now = nowBerlin();
-  if (start.toISODate() !== now.toISODate()) {
+  if (forgottenEnd(start, now)) {
     await interaction.reply({
       content:
-        `⚠️ Deine offene Arbeitszeit stammt vom **${start.toFormat('dd.MM.yyyy')} um ${start.toFormat('HH:mm')} Uhr**. ` +
-        'Damit wir nicht versehentlich die ganze Nacht als Arbeitszeit zählen, trage das tatsächliche Ende bitte mit **/arbeitszeit nachtragen** ein.',
+        `⚠️ Deine offene Arbeitszeit läuft seit **${start.toFormat('dd.MM.yyyy')} um ${start.toFormat('HH:mm')} Uhr**, also über ${MAX_LIVE_HOURS} Stunden. ` +
+        'Wahrscheinlich wurde **Ende** vergessen. Trage das tatsächliche Ende bitte mit **/arbeitszeit nachtragen** ein (nur datum und ende).',
       flags: MessageFlags.Ephemeral
     });
     return;
