@@ -637,7 +637,7 @@ async function stopFromClock(interaction: ButtonInteraction): Promise<void> {
 // fährt den Server herunter, sobald niemand mehr arbeitet (Details in scripts/night-shutdown-check.mjs).
 // ---------------------------------------------------------------------------
 
-type NightState = { askedAt: string; waiting: string[]; staying: string[]; declined: string[] };
+type NightState = { askedAt: string; waiting: string[]; staying: string[]; declined: string[]; messageId?: string };
 
 const nightPath = process.env.NIGHT_SHUTDOWN_FILE || path.join(process.cwd(), 'data', 'night-shutdown.json');
 const NIGHT_ANSWER_MINUTES = 10;
@@ -664,7 +664,16 @@ function nightRow(): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
+// Die Frage soll den Channel nicht zumüllen: Sie wird gelöscht, sobald alle geantwortet haben, nach Ablauf
+// der Antwortzeit, und spätestens bei der nächsten Frage (falls der Server vorher heruntergefahren ist).
+async function deleteNightQuestion(client: Client, messageId: string | undefined): Promise<void> {
+  if (!messageId) return;
+  const raw = await client.channels.fetch(config.timeTrackingChannelId).catch(() => null);
+  if (raw instanceof TextChannel) await raw.messages.delete(messageId).catch(() => undefined);
+}
+
 async function askNightShutdown(client: Client): Promise<void> {
+  await deleteNightQuestion(client, readNight()?.messageId);
   const now = nowBerlin();
   const state = await loadState();
   const working = [
@@ -675,7 +684,7 @@ async function askNightShutdown(client: Client): Promise<void> {
 
   const raw = await client.channels.fetch(config.timeTrackingChannelId);
   if (!(raw instanceof TextChannel)) return;
-  await raw.send({
+  const message = await raw.send({
     content:
       `🌙 ${working.map((id) => `<@${id}>`).join(' ')} deine Arbeitszeit läuft noch. **Arbeitest du noch?**\n` +
       `Ohne Antwort in ${NIGHT_ANSWER_MINUTES} Minuten fährt der Server um 23:00 Uhr herunter (er startet um 08:00 Uhr wieder). ` +
@@ -683,6 +692,9 @@ async function askNightShutdown(client: Client): Promise<void> {
     components: [nightRow()],
     allowedMentions: { users: working }
   });
+  const night = readNight();
+  if (night) await writeNight({ ...night, messageId: message.id });
+  setTimeout(() => void deleteNightQuestion(client, message.id), NIGHT_ANSWER_MINUTES * 60 * 1000);
 }
 
 async function answerNightShutdown(interaction: ButtonInteraction, stays: boolean): Promise<void> {
@@ -697,6 +709,7 @@ async function answerNightShutdown(interaction: ButtonInteraction, stays: boolea
   if (stays) night.staying.push(id);
   else night.declined.push(id);
   await writeNight(night);
+  if (night.waiting.length === 0) await deleteNightQuestion(interaction.client, night.messageId);
 
   if (stays) {
     await interaction.reply({
@@ -996,6 +1009,13 @@ async function ensureTimePanel(client: Client): Promise<void> {
 
   for (const duplicate of botMessages.values()) {
     if (duplicate.id !== existing?.id) await duplicate.delete().catch(() => undefined);
+  }
+  // Liegengebliebene Nachtabfragen (z. B. weil der Server um 23:00 heruntergefahren ist) wegräumen.
+  const currentNight = readNight()?.messageId;
+  for (const message of recent.values()) {
+    if (message.author.id === client.user?.id && message.content.includes('**Arbeitest du noch?**') && message.id !== currentNight) {
+      await message.delete().catch(() => undefined);
+    }
   }
 }
 
