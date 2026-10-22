@@ -1010,8 +1010,13 @@ async function ensureTimePanel(client: Client): Promise<void> {
   for (const duplicate of botMessages.values()) {
     if (duplicate.id !== existing?.id) await duplicate.delete().catch(() => undefined);
   }
-  // Liegengebliebene Nachtabfragen (z. B. weil der Server um 23:00 heruntergefahren ist) wegräumen.
-  const currentNight = readNight()?.messageId;
+  // Liegengebliebene Nachtabfragen wegräumen. Meist ist das die Frage von gestern Abend: Der Server fährt
+  // um 23:00 herunter, oft bevor der Bot sie nach den 10 Minuten löschen kann. Beim Start um 08:00 geht sie weg.
+  // Behalten wird nur eine Frage, auf die gerade noch geantwortet werden kann.
+  const night = readNight();
+  const stillOpen =
+    night && night.waiting.length > 0 && nowBerlin() < parseIso(night.askedAt).plus({ minutes: NIGHT_ANSWER_MINUTES });
+  const currentNight = stillOpen ? night.messageId : undefined;
   for (const message of recent.values()) {
     if (message.author.id === client.user?.id && message.content.includes('**Arbeitest du noch?**') && message.id !== currentNight) {
       await message.delete().catch(() => undefined);
