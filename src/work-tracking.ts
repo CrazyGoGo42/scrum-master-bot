@@ -6,6 +6,7 @@ import {
   ChatInputCommandInteraction,
   Client,
   Events,
+  InteractionReplyOptions,
   MessageFlags,
   ModalBuilder,
   ModalSubmitInteraction,
@@ -322,14 +323,45 @@ function correctStartModal(session: WorkSession | undefined): ModalBuilder {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Aufgeräumte Bestätigungen: Jede Panel-Antwort ersetzt die vorherige der Person. Eine Antwort mit Button
+// (Weitermachen) bleibt stehen, solange der Button noch gilt. Discord erlaubt das Löschen privater Antworten
+// nur 15 Minuten lang; ältere verschwinden beim nächsten Neuladen von Discord von selbst.
+// ---------------------------------------------------------------------------
+
+type PanelInteraction = ButtonInteraction | ModalSubmitInteraction | ChatInputCommandInteraction;
+const lastPanelReply = new Map<string, { interaction: PanelInteraction; hasButton: boolean }>();
+
+async function stillPaused(userId: string): Promise<boolean> {
+  const state = await loadState();
+  return state.sessions.some((entry) => entry.userId === userId && !entry.endAt && Boolean(openPause(entry)));
+}
+
+async function rememberPanelReply(interaction: PanelInteraction, hasButton: boolean): Promise<void> {
+  const previous = lastPanelReply.get(interaction.user.id);
+  lastPanelReply.set(interaction.user.id, { interaction, hasButton });
+  if (!previous || previous.interaction === interaction) return;
+  // Den Weitermachen-Button nur wegräumen, wenn die neue Antwort ihn ersetzt oder die Pause vorbei ist.
+  if (previous.hasButton && !hasButton && (await stillPaused(interaction.user.id))) {
+    lastPanelReply.set(interaction.user.id, previous);
+    return;
+  }
+  await previous.interaction.deleteReply().catch(() => undefined);
+}
+
+async function panelReply(interaction: PanelInteraction, options: InteractionReplyOptions): Promise<void> {
+  await interaction.reply(options);
+  await rememberPanelReply(interaction, Boolean(options.components?.length));
+}
+
 async function correctStartFromClock(interaction: ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
-    await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
     return;
   }
   const session = todaysSession(await loadState(), interaction.user.id);
   if (session?.endAt && !session.stopped) {
-    await interaction.reply({
+    await panelReply(interaction, {
       content: 'ℹ️ Dein Arbeitstag ist schon beendet. Korrigieren kannst du ihn mit **/arbeitszeit nachtragen** (datum, start, ende).',
       flags: MessageFlags.Ephemeral
     });
@@ -346,11 +378,11 @@ async function correctStartSubmit(interaction: ModalSubmitInteraction): Promise<
   const pause = pauseRaw ? Number(pauseRaw) : 0;
 
   if (!start.isValid || start > now) {
-    await interaction.reply({ content: `❌ Bitte eine Uhrzeit von heute angeben, die nicht in der Zukunft liegt (z. B. \`07:23\`). Eingabe: ${startRaw}`, flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: `❌ Bitte eine Uhrzeit von heute angeben, die nicht in der Zukunft liegt (z. B. \`07:23\`). Eingabe: ${startRaw}`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (!Number.isInteger(pause) || pause < 0) {
-    await interaction.reply({ content: `❌ Pause bitte als ganze Minuten angeben. Eingabe: ${pauseRaw}`, flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: `❌ Pause bitte als ganze Minuten angeben. Eingabe: ${pauseRaw}`, flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -360,7 +392,7 @@ async function correctStartSubmit(interaction: ModalSubmitInteraction): Promise<
   const startIso = start.toISO() ?? start.toJSDate().toISOString();
 
   if (session?.endAt && !session.stopped) {
-    await interaction.reply({ content: 'ℹ️ Dein Arbeitstag ist schon beendet. Nutze **/arbeitszeit nachtragen**.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: 'ℹ️ Dein Arbeitstag ist schon beendet. Nutze **/arbeitszeit nachtragen**.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -369,7 +401,7 @@ async function correctStartSubmit(interaction: ModalSubmitInteraction): Promise<
   const firstOther = others.map((interval) => parseIso(interval.startAt)).sort((a, b) => a.toMillis() - b.toMillis())[0];
   const limit = firstOther && firstOther < now ? firstOther : now;
   if (start > limit || start.plus({ minutes: pause }) > limit) {
-    await interaction.reply({
+    await panelReply(interaction, {
       content: `❌ Beginn plus Pause muss vor ${limit.toFormat('HH:mm')} Uhr liegen (deine erste erfasste Pause bzw. jetzt).`,
       flags: MessageFlags.Ephemeral
     });
@@ -389,7 +421,7 @@ async function correctStartSubmit(interaction: ModalSubmitInteraction): Promise<
   session.updatedAt = nowIso;
   await saveState(state);
 
-  await interaction.reply({
+  await panelReply(interaction, {
     content:
       `✏️ **Arbeitsbeginn korrigiert.** Die Zeiterfassung läuft ab hier weiter.\n\n${interimSummary(session, now)}` +
       (session.stopped ? '\n\n_Du bist gerade gestoppt. Mit **Start** geht es weiter._' : ''),
@@ -415,7 +447,7 @@ async function findAnyOpenSession(userId: string): Promise<WorkSession | undefin
 
 async function startFromClock(interaction: ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
-    await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -427,7 +459,7 @@ async function startFromClock(interaction: ButtonInteraction): Promise<void> {
   if (currentOpen) {
     const start = parseIso(currentOpen.startAt);
     const paused = Boolean(openPause(currentOpen));
-    await interaction.reply({
+    await panelReply(interaction, {
       content:
         `ℹ️ **Bereits um ${start.toFormat('HH:mm')} Uhr angefangen.**` +
         (start.toISODate() !== nowBerlin().toISODate() ? `\nDiese Arbeitszeit gehört zum ${start.toFormat('dd.MM.yyyy')} und ist noch offen.` : '') +
@@ -454,7 +486,7 @@ async function startFromClock(interaction: ButtonInteraction): Promise<void> {
     await saveState(state);
 
     const gap = Math.max(0, Math.round(now.diff(stoppedAt, 'minutes').minutes));
-    await interaction.reply({
+    await panelReply(interaction, {
       content:
         `▶️ **Weiter geht’s: ${now.toFormat('HH:mm')} Uhr.**\n` +
         `Die Unterbrechung seit ${stoppedAt.toFormat('HH:mm')} Uhr (${durationText(gap)}) zählt weder als Arbeit noch als Pause.`,
@@ -464,7 +496,7 @@ async function startFromClock(interaction: ButtonInteraction): Promise<void> {
   }
 
   if (completedToday) {
-    await interaction.reply({
+    await panelReply(interaction, {
       content:
         `ℹ️ Dein Arbeitstag für heute wurde bereits um **${endTimeText(completedToday)} Uhr** beendet.\n` +
         'Wenn du später am Tag weitermachen willst, drück das nächste Mal **Stop** statt **Ende**. Für heute kannst du die Zeit mit **/arbeitszeit nachtragen** korrigieren.',
@@ -488,7 +520,7 @@ async function startFromClock(interaction: ButtonInteraction): Promise<void> {
   state.sessions.push(session);
   await saveState(state);
 
-  await interaction.reply({
+  await panelReply(interaction, {
     content: `🟢 **Arbeitszeit gestartet: ${now.toFormat('HH:mm')} Uhr.**`,
     flags: MessageFlags.Ephemeral
   });
@@ -496,7 +528,7 @@ async function startFromClock(interaction: ButtonInteraction): Promise<void> {
 
 async function pauseFromClock(interaction: ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
-    await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -507,7 +539,7 @@ async function pauseFromClock(interaction: ButtonInteraction): Promise<void> {
 
   if (!session) {
     const today = todaysSession(state, interaction.user.id);
-    await interaction.reply({
+    await panelReply(interaction, {
       content:
         today?.stopped && today.endAt
           ? `ℹ️ Du hast um **${parseIso(today.endAt).toFormat('HH:mm')} Uhr** gestoppt. Mit **Start** geht’s weiter.`
@@ -519,7 +551,7 @@ async function pauseFromClock(interaction: ButtonInteraction): Promise<void> {
 
   const activePause = openPause(session);
   if (activePause) {
-    await interaction.reply({
+    await panelReply(interaction, {
       content:
         `⏸️ Du bist bereits seit **${parseIso(activePause.startAt).toFormat('HH:mm')} Uhr** in Pause.\n\n` +
         interimSummary(session, parseIso(activePause.startAt)),
@@ -535,7 +567,7 @@ async function pauseFromClock(interaction: ButtonInteraction): Promise<void> {
   session.updatedAt = now.toISO() ?? new Date().toISOString();
   await saveState(state);
 
-  await interaction.reply({
+  await panelReply(interaction, {
     content:
       `⏸️ **Pause gestartet: ${now.toFormat('HH:mm')} Uhr.**\n\n${interimSummary(session, now)}\n\n` +
       'Wenn du wieder da bist, drück **Weitermachen**.',
@@ -546,20 +578,20 @@ async function pauseFromClock(interaction: ButtonInteraction): Promise<void> {
 
 async function resumeFromClock(interaction: ButtonInteraction, sessionId: string): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
-    await interaction.reply({ content: '⛔ Keine Berechtigung.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: '⛔ Keine Berechtigung.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const state = await loadState();
   const session = state.sessions.find((entry) => entry.id === sessionId && entry.userId === interaction.user.id && !entry.endAt);
   if (!session) {
-    await interaction.reply({ content: 'ℹ️ Diese Arbeitszeit ist nicht mehr offen.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: 'ℹ️ Diese Arbeitszeit ist nicht mehr offen.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const activePause = openPause(session);
   if (!activePause) {
-    await interaction.reply({ content: 'ℹ️ Du arbeitest bereits wieder.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: 'ℹ️ Du arbeitest bereits wieder.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -573,11 +605,13 @@ async function resumeFromClock(interaction: ButtonInteraction, sessionId: string
     content: `🟠 **Weiter geht’s seit ${now.toFormat('HH:mm')} Uhr.**\nBisherige Pause: ${durationText(session.pauseMinutes)}.`,
     components: []
   });
+  // Die Pausen-Nachricht ist jetzt diese Nachricht (ohne Button); sie wird bei der nächsten Panel-Antwort weggeräumt.
+  lastPanelReply.set(interaction.user.id, { interaction, hasButton: false });
 }
 
 async function stopFromClock(interaction: ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
-    await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -594,14 +628,14 @@ async function stopFromClock(interaction: ButtonInteraction): Promise<void> {
     } else if (today?.endAt) {
       content = `ℹ️ Dein Arbeitstag für heute wurde bereits um **${endTimeText(today)} Uhr** beendet.`;
     }
-    await interaction.reply({ content, flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content, flags: MessageFlags.Ephemeral });
     return;
   }
 
   const start = parseIso(session.startAt);
   const now = nowBerlin();
   if (forgottenEnd(start, now)) {
-    await interaction.reply({
+    await panelReply(interaction, {
       content:
         `⚠️ Deine offene Arbeitszeit läuft seit **${start.toFormat('dd.MM.yyyy')} um ${start.toFormat('HH:mm')} Uhr**, also über ${MAX_LIVE_HOURS} Stunden. ` +
         'Wahrscheinlich wurde **Ende** vergessen. Trage das tatsächliche Ende bitte mit **/arbeitszeit nachtragen** ein (nur datum und ende).',
@@ -621,7 +655,7 @@ async function stopFromClock(interaction: ButtonInteraction): Promise<void> {
   await saveState(state);
 
   const net = durationMinutes(session) ?? 0;
-  await interaction.reply({
+  await panelReply(interaction, {
     content:
       `⏹️ **Gestoppt: ${stoppedAt.toFormat('HH:mm')} Uhr.** Bisher heute: **${durationText(net)}**.\n` +
       (activePause ? `Deine Pause ab ${stoppedAt.toFormat('HH:mm')} Uhr zählt nicht mit, die Arbeit endete dort.\n` : '') +
@@ -724,7 +758,7 @@ async function answerNightShutdown(interaction: ButtonInteraction, stays: boolea
 
 async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonInteraction): Promise<void> {
   if (!isTeamMember(interaction.user.id)) {
-    await interaction.reply({ content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
+    await panelReply(interaction, { content: '⛔ Du gehörst nicht zum konfigurierten Projektteam.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -740,7 +774,7 @@ async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonI
       today.updatedAt = nowBerlin().toISO() ?? new Date().toISOString();
       await saveState(state);
       const net = durationMinutes(today) ?? 0;
-      await interaction.reply({
+      await panelReply(interaction, {
         content:
           `🔴 **Arbeitstag abgeschlossen.** Ende war dein Stop um ${parseIso(today.endAt).toFormat('HH:mm')} Uhr.\n` +
           `${timeRangeText(today)} Uhr · Pause ${durationText(today.pauseMinutes)} · **${durationText(net)} Arbeitszeit**`,
@@ -748,7 +782,7 @@ async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonI
       });
       return;
     }
-    await interaction.reply({
+    await panelReply(interaction, {
       content: 'ℹ️ Für dich läuft aktuell keine Arbeitszeit. Falls ein vergangener Tag offen ist, nutze **/arbeitszeit nachtragen**.',
       flags: MessageFlags.Ephemeral
     });
@@ -758,7 +792,7 @@ async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonI
   const start = parseIso(session.startAt);
   const now = nowBerlin();
   if (forgottenEnd(start, now)) {
-    await interaction.reply({
+    await panelReply(interaction, {
       content:
         `⚠️ Deine offene Arbeitszeit läuft seit **${start.toFormat('dd.MM.yyyy')} um ${start.toFormat('HH:mm')} Uhr**, also über ${MAX_LIVE_HOURS} Stunden. ` +
         'Wahrscheinlich wurde **Ende** vergessen. Trage das tatsächliche Ende bitte mit **/arbeitszeit nachtragen** ein (nur datum und ende).',
@@ -775,7 +809,7 @@ async function endOpenSession(interaction: ChatInputCommandInteraction | ButtonI
   await saveState(state);
 
   const net = durationMinutes(session) ?? 0;
-  await interaction.reply({
+  await panelReply(interaction, {
     content:
       `🔴 **Arbeitstag beendet: ${now.toFormat('HH:mm')} Uhr.**\n` +
       `${timeRangeText(session)} Uhr · Pause ${durationText(session.pauseMinutes)} · **${durationText(net)} Arbeitszeit**`,

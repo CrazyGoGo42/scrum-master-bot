@@ -1644,21 +1644,23 @@ async function handleAbsenceModal(interaction: ModalSubmitInteraction): Promise<
     return;
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  // Kommt das Formular aus der Daily-Nachricht, wird diese ersetzt statt eine neue anzuhängen.
+  if (interaction.isFromMessage()) await interaction.deferUpdate();
+  else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const detail = interaction.fields.getTextInputValue('reason').trim();
   const kind: AbsenceKind = interaction.customId.endsWith(':appointment') ? 'Termin' : 'Anderes';
 
   try {
     const thread = await createAbsence(interaction.user.id, kind, detail);
     drafts.delete(interaction.user.id);
-    await interaction.editReply(`🟦 **Für heute abgemeldet.**\nGrund: **${kind}** · ${detail}\nAbmeldung: <#${thread.id}>`);
+    await interaction.editReply({ content: `🟦 **Für heute abgemeldet.**\nGrund: **${kind}** · ${detail}\nAbmeldung: <#${thread.id}>`, components: [] });
   } catch (error) {
     if (error instanceof Error && error.message === 'DAILY_ALREADY_EXISTS') {
-      await interaction.editReply('✅ Für heute liegt bereits ein Daily vor. Eine Abmeldung ist nicht mehr nötig.');
+      await interaction.editReply({ content: '✅ Für heute liegt bereits ein Daily vor. Eine Abmeldung ist nicht mehr nötig.', components: [] });
       return;
     }
     console.error('Abmeldung konnte nicht erstellt werden.', error);
-    await interaction.editReply('❌ Die Abmeldung konnte nicht gespeichert werden.');
+    await interaction.editReply({ content: '❌ Die Abmeldung konnte nicht gespeichert werden.', components: [] });
   }
 }
 
@@ -1744,10 +1746,9 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   if (interaction.customId === 'daily:q1') {
     draft.previous = interaction.fields.getTextInputValue('answer').trim();
     await drafts.touch(interaction.user.id);
-    await interaction.reply({
+    await replyInFlow(interaction, {
       content: `✅ **Frage 1/4 beantwortet**\n\n**Deine Antwort:**\n${draft.previous}\n\nWeiter mit Frage 2:`,
-      components: [nextButton('daily:next-q2', 'Weiter zu Frage 2')],
-      flags: MessageFlags.Ephemeral
+      components: [nextButton('daily:next-q2', 'Weiter zu Frage 2')]
     });
     return;
   }
@@ -1755,12 +1756,11 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   if (interaction.customId === 'daily:q2') {
     draft.today = interaction.fields.getTextInputValue('answer').trim();
     await drafts.touch(interaction.user.id);
-    await interaction.reply({
+    await replyInFlow(interaction, {
       content:
         `✅ **Frage 2/4 beantwortet**\n\n**Deine Antwort:**\n${draft.today}\n\n` +
         `### Frage 3/4\nHast du aktuell Probleme oder Blocker?`,
-      components: [blockerButtons()],
-      flags: MessageFlags.Ephemeral
+      components: [blockerButtons()]
     });
     return;
   }
@@ -1768,10 +1768,9 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   if (interaction.customId === 'daily:q3') {
     draft.blocker = interaction.fields.getTextInputValue('answer').trim();
     await drafts.touch(interaction.user.id);
-    await interaction.reply({
+    await replyInFlow(interaction, {
       content: `✅ **Frage 3/4 beantwortet**\n\n**Blocker:**\n${draft.blocker}\n\nWeiter mit der letzten Frage:`,
-      components: [nextButton('daily:next-q4', 'Weiter zu Frage 4')],
-      flags: MessageFlags.Ephemeral
+      components: [nextButton('daily:next-q4', 'Weiter zu Frage 4')]
     });
     return;
   }
@@ -1779,14 +1778,23 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   if (interaction.customId === 'daily:q4') {
     draft.branch = interaction.fields.getTextInputValue('branch').trim();
     await drafts.touch(interaction.user.id);
-    await interaction.reply({
+    await replyInFlow(interaction, {
       content:
         `✅ **Branch gespeichert:** \`${draft.branch}\`\n\n` +
         `### Frage 4/4\nMusst du noch etwas committen oder pushen?`,
-      components: [pushButtons()],
-      flags: MessageFlags.Ephemeral
+      components: [pushButtons()]
     });
   }
+}
+
+// Das Daily läuft in einer einzigen privaten Nachricht: Kommt das Formular von einem Button dieser Nachricht,
+// wird sie ersetzt statt eine neue anzuhängen. So bleibt nur der aktuelle Schritt sichtbar.
+async function replyInFlow(
+  interaction: ModalSubmitInteraction,
+  options: { content: string; components: ActionRowBuilder<ButtonBuilder>[] }
+): Promise<void> {
+  if (interaction.isFromMessage()) await interaction.update({ ...options, allowedMentions: { parse: [] } });
+  else await interaction.reply({ ...options, allowedMentions: { parse: [] }, flags: MessageFlags.Ephemeral });
 }
 
 async function logHealth(): Promise<void> {
