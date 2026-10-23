@@ -25,6 +25,7 @@ import { parseItems, singleLine } from './text-items.js';
 import { splitDiscordText } from './utils/discord-text.js';
 import { keepUnreadableFile } from './utils/state-files.js';
 import { deleteMeeting, findMeeting, setMeetingCancelled, updateMeeting } from './weekly-project.js';
+import { meetingLocationRow, storedVenue, venueFromInput } from './meeting-venues.js';
 
 type TaskStatus = 'todo' | 'doing' | 'done';
 type BlockerStatus = 'open' | 'resolved';
@@ -254,15 +255,33 @@ async function updateMeetingPost(message: Message, meeting: MeetingEntry | undef
     const start = Math.floor(berlin(meeting.startAt).toSeconds());
     status =
       ` ✏️ Geändert\n**Thema:** ${meeting.title}\n**Start:** <t:${start}:F> · <t:${start}:R>\n` +
-      `**Ende:** ${berlin(meeting.endAt).toFormat('HH:mm')} Uhr\n**Ort:** ${meeting.venueLabel}` +
+      `**Ende:** ${berlin(meeting.endAt).toFormat('HH:mm')} Uhr\n**Ort:** ${venueMarkdown(meeting)}` +
       (meeting.rescheduledFrom ? `\n_Verschoben, ursprünglich ${berlin(meeting.rescheduledFrom).toFormat('dd.MM.yyyy HH:mm')} Uhr._` : '');
   }
+  // Der Link-Button zum Ort (erste Zeile mit Link-Button) zeigt immer auf den aktuellen Ort.
+  const venue = meeting ? storedVenue(meeting) : undefined;
+  const firstRow = message.components[0];
+  const hasLocationRow = Boolean(firstRow && 'components' in firstRow && firstRow.components.some((part) => 'url' in part && part.url));
+  const components =
+    venue && hasLocationRow ? [meetingLocationRow(venue), ...message.components.slice(1)] : undefined;
   await message.edit({
     content: `${base}${MEETING_STATUS_MARKER}${status}`,
     // Gelöscht: keine Aktionen mehr, sonst landen Protokolle bei einem Meeting, das es nicht mehr gibt.
-    ...(meeting ? {} : { components: [] }),
+    ...(meeting ? (components ? { components } : {}) : { components: [] }),
     allowedMentions: { parse: [] }
   });
+}
+
+function venueMarkdown(meeting: MeetingEntry): string {
+  if (meeting.venueKind === 'discord' || !meeting.venueUrl) return meeting.venueLabel;
+  return `[${meeting.venueLabel}](${meeting.venueUrl})`;
+}
+
+// Vorbelegung fürs Feld „Ort“: Discord, Alfaview oder der Link selbst.
+function venueInputValue(meeting: MeetingEntry): string {
+  if (meeting.venueKind === 'discord') return 'Discord';
+  if (meeting.venueKind === 'alfaview') return 'Alfaview';
+  return meeting.venueUrl ?? '';
 }
 
 async function meetingPost(interaction: ButtonInteraction | ModalSubmitInteraction, messageId: string): Promise<Message | undefined> {
@@ -284,7 +303,16 @@ function meetingChangeModal(meeting: MeetingEntry): ModalBuilder {
       input('date', 'Datum (TT.MM.JJJJ)', start.toFormat('dd.MM.yyyy'), 10),
       input('time', 'Uhrzeit (HH:MM)', start.toFormat('HH:mm'), 5),
       input('duration', 'Dauer in Minuten', String(minutes), 3),
-      input('venue', 'Ort', meeting.venueLabel.slice(0, 100), 100)
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('venue')
+          .setLabel('Ort: Discord, Alfaview oder Link')
+          .setPlaceholder('Discord · Alfaview · https://teams… · https://call.whatsapp.com/…')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(1000)
+          .setValue(venueInputValue(meeting))
+      )
     );
 }
 
@@ -369,20 +397,25 @@ async function handleMeetingChangeModal(interaction: ModalSubmitInteraction, mes
   const date = interaction.fields.getTextInputValue('date').trim();
   const time = interaction.fields.getTextInputValue('time').trim();
   const duration = Number(interaction.fields.getTextInputValue('duration').trim());
-  const venueLabel = interaction.fields.getTextInputValue('venue').trim();
+  const venueInput = interaction.fields.getTextInputValue('venue').trim();
+  const venue = venueFromInput(venueInput);
   const start = DateTime.fromFormat(`${date} ${time}`, 'dd.MM.yyyy HH:mm', { zone: config.timezone, locale: 'de' });
 
-  if (!title || !venueLabel || !start.isValid || !Number.isInteger(duration) || duration < 10 || duration > 480) {
+  if (typeof venue === 'string') {
+    await interaction.reply({ content: `❌ ${venue}\nDeine Eingabe: ${venueInput || '(leer)'}`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (!title || !start.isValid || !Number.isInteger(duration) || duration < 10 || duration > 480) {
     await interaction.reply({
       content:
         '❌ Bitte Datum als **TT.MM.JJJJ**, Uhrzeit als **HH:MM** und Dauer zwischen **10 und 480 Minuten** angeben. ' +
-        `Deine Eingaben: ${title} · ${date} ${time} · ${interaction.fields.getTextInputValue('duration')} min · ${venueLabel}`,
+        `Deine Eingaben: ${title} · ${date} ${time} · ${interaction.fields.getTextInputValue('duration')} min · ${venue.label}`,
       flags: MessageFlags.Ephemeral
     });
     return;
   }
 
-  const updated = await updateMeeting(messageId, { title, start, end: start.plus({ minutes: duration }), venueLabel });
+  const updated = await updateMeeting(messageId, { title, start, end: start.plus({ minutes: duration }), venue });
   if (!updated) {
     await interaction.reply({ content: '❌ Das Meeting wurde nicht gefunden.', flags: MessageFlags.Ephemeral });
     return;

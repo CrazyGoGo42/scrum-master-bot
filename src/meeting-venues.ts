@@ -39,6 +39,15 @@ function externalVenueLabel(value: string): { label: string; buttonLabel: string
     if (hostname.includes('alfaview.com')) {
       return { label: 'Alfaview', buttonLabel: 'Alfaview öffnen' };
     }
+    if (hostname.includes('whatsapp.com') || hostname === 'wa.me') {
+      return { label: 'WhatsApp', buttonLabel: 'WhatsApp öffnen' };
+    }
+    if (hostname.includes('zoom.us')) {
+      return { label: 'Zoom', buttonLabel: 'Zoom öffnen' };
+    }
+    if (hostname === 'meet.google.com') {
+      return { label: 'Google Meet', buttonLabel: 'Google Meet öffnen' };
+    }
   } catch {
     // URL wurde vorher validiert. Fallback bleibt trotzdem defensiv.
   }
@@ -92,47 +101,59 @@ export function meetingVenueContinueRow(): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
-export function selectMeetingVenue(userId: string, kind: string, customUrl?: string | null): string | undefined {
+/** Baut einen Meeting-Ort. Liefert bei ungültiger Eingabe einen Fehlertext. */
+export function buildMeetingVenue(kind: string, customUrl?: string | null): MeetingVenue | string {
   if (kind === 'discord') {
-    pendingVenues.set(userId, {
+    return {
       kind: 'discord',
       label: 'Discord Meeting-Voice',
       buttonLabel: 'Zum Voice-Channel',
       url: `https://discord.com/channels/${config.guildId}/${config.meetingVoiceChannelId}`
-    });
-    return undefined;
+    };
   }
 
   if (kind === 'alfaview') {
     const url = process.env.ALFAVIEW_MEETING_URL?.trim();
     if (!url) return 'Für Alfaview fehlt `ALFAVIEW_MEETING_URL` in der `.env` des Bots.';
     if (!validHttpUrl(url)) return '`ALFAVIEW_MEETING_URL` ist keine gültige http/https-URL.';
-
-    pendingVenues.set(userId, {
-      kind: 'alfaview',
-      label: 'Alfaview',
-      buttonLabel: 'Alfaview öffnen',
-      url
-    });
-    return undefined;
+    return { kind: 'alfaview', label: 'Alfaview', buttonLabel: 'Alfaview öffnen', url };
   }
 
   if (kind === 'external') {
     const url = customUrl?.trim();
-    if (!url) return 'Bitte gib einen Teams- oder anderen http/https-Meeting-Link ein.';
+    if (!url) return 'Bitte gib einen Teams-, WhatsApp- oder anderen http/https-Meeting-Link ein.';
     if (!validHttpUrl(url)) return 'Der angegebene Meeting-Link ist keine gültige http/https-URL.';
-
-    const labels = externalVenueLabel(url);
-    pendingVenues.set(userId, {
-      kind: 'external',
-      label: labels.label,
-      buttonLabel: labels.buttonLabel,
-      url
-    });
-    return undefined;
+    return { kind: 'external', ...externalVenueLabel(url), url };
   }
 
   return 'Unbekannter Meeting-Ort. Bitte Discord Voice, Alfaview oder Anderer Link auswählen.';
+}
+
+/** Freitext aus „Meeting ändern“: „Discord“, „Alfaview“ oder ein Link. */
+export function venueFromInput(input: string): MeetingVenue | string {
+  const value = input.trim();
+  if (/^discord/i.test(value)) return buildMeetingVenue('discord');
+  if (/^alfaview$/i.test(value)) return buildMeetingVenue('alfaview');
+  if (/^https?:\/\//i.test(value)) return buildMeetingVenue('external', value);
+  return 'Beim Ort bitte **Discord**, **Alfaview** oder einen Link (https://…) angeben, z. B. den Teams- oder WhatsApp-Link.';
+}
+
+/** Ort eines gespeicherten Meetings, z. B. für den Link-Button am Meeting-Post. */
+export function storedVenue(meeting: { venueKind: MeetingVenue['kind']; venueLabel: string; venueUrl?: string }): MeetingVenue | undefined {
+  if (meeting.venueKind === 'discord') {
+    const built = buildMeetingVenue('discord');
+    return typeof built === 'string' ? undefined : built;
+  }
+  if (!meeting.venueUrl) return undefined;
+  const buttonLabel = meeting.venueKind === 'alfaview' ? 'Alfaview öffnen' : externalVenueLabel(meeting.venueUrl).buttonLabel;
+  return { kind: meeting.venueKind, label: meeting.venueLabel, buttonLabel, url: meeting.venueUrl };
+}
+
+export function selectMeetingVenue(userId: string, kind: string, customUrl?: string | null): string | undefined {
+  const venue = buildMeetingVenue(kind, customUrl);
+  if (typeof venue === 'string') return venue;
+  pendingVenues.set(userId, venue);
+  return undefined;
 }
 
 export function hasMeetingVenue(userId: string): boolean {

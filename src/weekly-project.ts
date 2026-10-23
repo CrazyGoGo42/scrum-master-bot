@@ -109,7 +109,12 @@ async function writeMeetingHistory(history: MeetingHistory): Promise<void> {
   await meetingWriteQueue;
 }
 
-export type MeetingChange = { title: string; start: DateTime; end: DateTime; venueLabel: string };
+export type MeetingChange = {
+  title: string;
+  start: DateTime;
+  end: DateTime;
+  venue: { kind: 'discord' | 'alfaview' | 'external'; label: string; url: string };
+};
 
 export function findMeeting(messageId: string): StoredMeeting | undefined {
   return readJson<MeetingHistory>(meetingHistoryPath, { meetings: [] }).meetings.find((meeting) => meeting.messageId === messageId);
@@ -147,7 +152,9 @@ export async function updateMeeting(messageId: string, update: MeetingChange): P
     meeting.title = update.title.trim();
     meeting.startAt = startAt;
     meeting.endAt = update.end.toISO() ?? update.end.toJSDate().toISOString();
-    meeting.venueLabel = update.venueLabel.trim();
+    meeting.venueKind = update.venue.kind;
+    meeting.venueLabel = update.venue.label;
+    meeting.venueUrl = update.venue.url;
     result = { ...meeting };
     return true;
   });
