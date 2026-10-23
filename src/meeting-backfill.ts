@@ -47,7 +47,7 @@ export const meetingBackfillCommand = new SlashCommandBuilder()
       .setRequired(true)
       .addChoices(
         { name: 'Discord Voice', value: 'discord' },
-        { name: 'Alfaview', value: 'alfaview' },
+        { name: 'WhatsApp', value: 'whatsapp' },
         { name: 'Anderer Link / Teams', value: 'external' }
       )
   )
@@ -55,7 +55,7 @@ export const meetingBackfillCommand = new SlashCommandBuilder()
     option.setName('agenda').setDescription('Agenda oder Ziel des Meetings').setMaxLength(1000)
   )
   .addStringOption((option) =>
-    option.setName('link').setDescription('Nur bei „Anderer Link“: Teams- oder Meeting-Link').setMaxLength(1000)
+    option.setName('link').setDescription('Bei „Anderer Link / Teams“ nötig, bei WhatsApp optional').setMaxLength(1000)
   )
   .toJSON();
 

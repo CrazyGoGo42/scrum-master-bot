@@ -25,7 +25,7 @@ import { parseItems, singleLine } from './text-items.js';
 import { splitDiscordText } from './utils/discord-text.js';
 import { keepUnreadableFile } from './utils/state-files.js';
 import { deleteMeeting, findMeeting, setMeetingCancelled, updateMeeting } from './weekly-project.js';
-import { meetingLocationRow, storedVenue, venueFromInput } from './meeting-venues.js';
+import { WHATSAPP_WEB, meetingLocationRow, storedVenue, venueFromInput } from './meeting-venues.js';
 
 type TaskStatus = 'todo' | 'doing' | 'done';
 type BlockerStatus = 'open' | 'resolved';
@@ -277,10 +277,10 @@ function venueMarkdown(meeting: MeetingEntry): string {
   return `[${meeting.venueLabel}](${meeting.venueUrl})`;
 }
 
-// Vorbelegung fürs Feld „Ort“: Discord, Alfaview oder der Link selbst.
+// Vorbelegung fürs Feld „Ort“: Discord, WhatsApp (ohne eigenen Link) oder der Link selbst.
 function venueInputValue(meeting: MeetingEntry): string {
   if (meeting.venueKind === 'discord') return 'Discord';
-  if (meeting.venueKind === 'alfaview') return 'Alfaview';
+  if (meeting.venueUrl === WHATSAPP_WEB) return 'WhatsApp';
   return meeting.venueUrl ?? '';
 }
 
@@ -306,8 +306,8 @@ function meetingChangeModal(meeting: MeetingEntry): ModalBuilder {
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('venue')
-          .setLabel('Ort: Discord, Alfaview oder Link')
-          .setPlaceholder('Discord · Alfaview · https://teams… · https://call.whatsapp.com/…')
+          .setLabel('Ort: Discord, WhatsApp oder Link')
+          .setPlaceholder('Discord · WhatsApp · https://teams… · https://call.whatsapp.com/…')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(1000)

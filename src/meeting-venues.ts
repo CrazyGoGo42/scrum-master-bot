@@ -20,6 +20,8 @@ export type MeetingVenue = {
 };
 
 const pendingVenues = new Map<string, MeetingVenue>();
+// Ziel des Buttons, wenn ein WhatsApp-Meeting keinen eigenen Link hat.
+export const WHATSAPP_WEB = 'https://web.whatsapp.com/';
 
 function validHttpUrl(value: string): boolean {
   try {
@@ -62,30 +64,32 @@ export function meetingVenueChoiceRow(): ActionRowBuilder<ButtonBuilder> {
       .setEmoji('🔊')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId('meeting:venue:alfaview')
-      .setLabel('Alfaview')
-      .setEmoji('🟠')
+      .setCustomId('meeting:venue:whatsapp')
+      .setLabel('WhatsApp')
+      .setEmoji('💬')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId('meeting:venue:external')
-      .setLabel('Anderer Link')
+      .setLabel('Teams / anderer Link')
       .setEmoji('🔗')
       .setStyle(ButtonStyle.Secondary)
   );
 }
 
-export function externalMeetingLinkModal(): ModalBuilder {
+// WhatsApp: Link optional, oft wird einfach in der Gruppe angerufen.
+export function externalMeetingLinkModal(kind: 'external' | 'whatsapp' = 'external'): ModalBuilder {
+  const whatsapp = kind === 'whatsapp';
   return new ModalBuilder()
-    .setCustomId('meeting:venue-external')
-    .setTitle('Externer Meeting-Link')
+    .setCustomId(whatsapp ? 'meeting:venue-whatsapp' : 'meeting:venue-external')
+    .setTitle(whatsapp ? 'WhatsApp-Meeting' : 'Externer Meeting-Link')
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('link')
-          .setLabel('Teams- oder anderer Meeting-Link')
-          .setPlaceholder('https://...')
+          .setLabel(whatsapp ? 'Anruf- oder Gruppenlink (optional)' : 'Teams- oder anderer Meeting-Link')
+          .setPlaceholder(whatsapp ? 'https://call.whatsapp.com/… oder leer lassen' : 'https://...')
           .setStyle(TextInputStyle.Short)
-          .setRequired(true)
+          .setRequired(!whatsapp)
           .setMaxLength(1000)
       )
     );
@@ -112,11 +116,11 @@ export function buildMeetingVenue(kind: string, customUrl?: string | null): Meet
     };
   }
 
-  if (kind === 'alfaview') {
-    const url = process.env.ALFAVIEW_MEETING_URL?.trim();
-    if (!url) return 'Für Alfaview fehlt `ALFAVIEW_MEETING_URL` in der `.env` des Bots.';
-    if (!validHttpUrl(url)) return '`ALFAVIEW_MEETING_URL` ist keine gültige http/https-URL.';
-    return { kind: 'alfaview', label: 'Alfaview', buttonLabel: 'Alfaview öffnen', url };
+  if (kind === 'whatsapp') {
+    const url = customUrl?.trim();
+    if (!url) return { kind: 'external', label: 'WhatsApp', buttonLabel: 'WhatsApp öffnen', url: WHATSAPP_WEB };
+    if (!validHttpUrl(url)) return 'Der angegebene WhatsApp-Link ist keine gültige http/https-URL.';
+    return { kind: 'external', label: 'WhatsApp', buttonLabel: 'WhatsApp öffnen', url };
   }
 
   if (kind === 'external') {
@@ -126,16 +130,16 @@ export function buildMeetingVenue(kind: string, customUrl?: string | null): Meet
     return { kind: 'external', ...externalVenueLabel(url), url };
   }
 
-  return 'Unbekannter Meeting-Ort. Bitte Discord Voice, Alfaview oder Anderer Link auswählen.';
+  return 'Unbekannter Meeting-Ort. Bitte Discord Voice, WhatsApp oder Teams / anderer Link auswählen.';
 }
 
-/** Freitext aus „Meeting ändern“: „Discord“, „Alfaview“ oder ein Link. */
+/** Freitext aus „Meeting ändern“: „Discord“, „WhatsApp“ oder ein Link. */
 export function venueFromInput(input: string): MeetingVenue | string {
   const value = input.trim();
   if (/^discord/i.test(value)) return buildMeetingVenue('discord');
-  if (/^alfaview$/i.test(value)) return buildMeetingVenue('alfaview');
+  if (/^whatsapp$/i.test(value)) return buildMeetingVenue('whatsapp');
   if (/^https?:\/\//i.test(value)) return buildMeetingVenue('external', value);
-  return 'Beim Ort bitte **Discord**, **Alfaview** oder einen Link (https://…) angeben, z. B. den Teams- oder WhatsApp-Link.';
+  return 'Beim Ort bitte **Discord**, **WhatsApp** oder einen Link (https://…) angeben, z. B. den Teams- oder WhatsApp-Link.';
 }
 
 /** Ort eines gespeicherten Meetings, z. B. für den Link-Button am Meeting-Post. */
