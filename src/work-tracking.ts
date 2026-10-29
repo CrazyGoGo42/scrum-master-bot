@@ -382,7 +382,7 @@ function fixModal(session: WorkSession | undefined): ModalBuilder {
   const rows = [
     ...(session ? [] : [field('date', 'Datum (Tag, an dem du angefangen hast)', true, undefined, 'TT.MM.JJJJ', 10)]),
     field('time', 'Arbeitszeit von-bis', true, start ? `${hhmm(start)}-${end ? hhmm(end) : ''}` : undefined, '09:24-17:30 · Ende leer = läuft noch', 11),
-    field('pause', 'Pause gesamt in Minuten', false, pause !== undefined ? String(pause) : undefined, 'leer = 0', 3),
+    field('pause', 'Pause gesamt in Minuten', false, pause !== undefined ? String(pause) : undefined, 'leer = 0', 6),
     field('gaps', 'Unterbrechungen wie Stop (optional)', false, gaps || undefined, '12:03-19:17, 20:00-20:30', 100),
     field('quality', 'Genau oder geschätzt?', true, session?.provenance === 'manual-estimated' ? 'geschätzt' : 'genau', 'genau / geschätzt', 9)
   ];
