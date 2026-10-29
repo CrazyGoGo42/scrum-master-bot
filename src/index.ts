@@ -283,6 +283,9 @@ function meetingVoiceRow(): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
+// Höchstlänge eines Discord-Textfelds. Lange Dailies verteilt daily-parts.ts auf mehrere Nachrichten.
+const DAILY_TEXT_LIMIT = 4000;
+
 function textarea(
   id: string,
   label: string,
@@ -330,14 +333,14 @@ function questionOneModal(draft?: DailyDraft): ModalBuilder {
   return new ModalBuilder()
     .setCustomId('daily:q1')
     .setTitle('Daily Scrum • Frage 1/4')
-    .addComponents(textarea('answer', label, 'Kurz und konkret. Mehrere Punkte: jeder mit - am Zeilenanfang', draft?.previous));
+    .addComponents(textarea('answer', label, 'Kurz und konkret. Mehrere Punkte: jeder mit - am Zeilenanfang', draft?.previous, true, DAILY_TEXT_LIMIT));
 }
 
 function questionTwoModal(draft?: DailyDraft): ModalBuilder {
   return new ModalBuilder()
     .setCustomId('daily:q2')
     .setTitle('Daily Scrum • Frage 2/4')
-    .addComponents(textarea('answer', 'Was möchtest du heute machen?', 'Plane deinen Arbeitstag. Mehrere Punkte: jeder mit - am Zeilenanfang', draft?.today));
+    .addComponents(textarea('answer', 'Was möchtest du heute machen?', 'Plane deinen Arbeitstag. Mehrere Punkte: jeder mit - am Zeilenanfang', draft?.today, true, DAILY_TEXT_LIMIT));
 }
 
 function blockerModal(draft?: DailyDraft): ModalBuilder {
@@ -349,7 +352,9 @@ function blockerModal(draft?: DailyDraft): ModalBuilder {
         'answer',
         'Welche Probleme oder Blocker hast du?',
         'Was hält dich auf? Mehrere Blocker: jeder mit - am Zeilenanfang',
-        draft?.blocker === 'Keine' ? undefined : draft?.blocker
+        draft?.blocker === 'Keine' ? undefined : draft?.blocker,
+        true,
+        DAILY_TEXT_LIMIT
       )
     );
 }

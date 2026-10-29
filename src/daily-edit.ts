@@ -93,9 +93,9 @@ function editModal(threadId: string, content: string): ModalBuilder {
     .setCustomId(`daily-edit:${threadId}`)
     .setTitle('Daily bearbeiten')
     .addComponents(
-      modalInput('previous', 'Seit dem letzten Daily', TextInputStyle.Paragraph, previous || '-', 1000),
-      modalInput('today', 'Heute', TextInputStyle.Paragraph, today || '-', 1000),
-      modalInput('blocker', 'Blocker', TextInputStyle.Paragraph, blocker, 1000),
+      modalInput('previous', 'Seit dem letzten Daily', TextInputStyle.Paragraph, previous || '-', MODAL_TEXT_LIMIT),
+      modalInput('today', 'Heute', TextInputStyle.Paragraph, today || '-', MODAL_TEXT_LIMIT),
+      modalInput('blocker', 'Blocker', TextInputStyle.Paragraph, blocker, MODAL_TEXT_LIMIT),
       modalInput('branch', 'Branch', TextInputStyle.Short, branch, 200),
       modalInput('push', 'Noch zu pushen? Ja oder Nein', TextInputStyle.Short, pushPending, 4)
     );

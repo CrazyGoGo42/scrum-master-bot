@@ -2,10 +2,16 @@
 //
 // Ein neuer Punkt beginnt nur mit einem Spiegelstrich am Zeilenanfang, gefolgt von einem Leerzeichen:
 // "- ", "* ", "• ", "– " oder "— ". Zeilen ohne Spiegelstrich gehören zum Punkt darüber, auch nach
-// einer Leerzeile. Bindestriche im Satz ("very-well-designed", "Blocker - Test") trennen nichts.
+// einer Leerzeile. Weiter eingerückte Spiegelstriche sind Unterpunkte des Punkts darüber.
+// Bindestriche im Satz ("very-well-designed", "Blocker - Test") trennen nichts.
 // Text ohne jeden Spiegelstrich ist genau ein Punkt.
 
 const BULLET = /^\s*[-*•–—]\s+/;
+
+// Einrückung einer Zeile; ein Tab zählt wie vier Leerzeichen.
+function indentOf(line: string): number {
+  return (line.match(/^\s*/)?.[0] ?? '').replace(/\t/g, '    ').length;
+}
 
 /**
  * Zerlegt Freitext in Punkte. Zeilenumbrüche innerhalb eines Punkts bleiben erhalten, Leerzeilen nicht.
@@ -21,13 +27,19 @@ export function parseItems(value: string | undefined, onePerLine = false): strin
 
   const items: string[][] = [];
   let current: string[] | undefined;
+  let currentIndent = 0;
   for (const line of lines) {
     if (/^\s*[-*•–—]\s*$/.test(line)) continue; // nur ein Strich: leer, z. B. „-“ für „nichts“
-    if (BULLET.test(line)) {
+    if (current && BULLET.test(line) && indentOf(line) >= currentIndent + 2) {
+      // Weiter eingerückt als der Punkt darüber: Unterpunkt, kein neuer Punkt.
+      current.push(line.trim());
+    } else if (BULLET.test(line)) {
+      currentIndent = indentOf(line);
       current = [line.replace(BULLET, '').trim()];
       items.push(current);
     } else if (line.trim()) {
       if (!current) {
+        currentIndent = indentOf(line);
         current = [];
         items.push(current);
       }
@@ -49,8 +61,11 @@ export function itemsAsBullets(value: string, empty = ''): string {
 
 /** Text fürs Bearbeiten-Formular: mehrere Punkte mit Spiegelstrich, ein einzelner Punkt ohne. */
 export function itemsForEditing(items: string[]): string {
-  if (items.length <= 1) return items[0] ?? '';
-  return items.map((item) => `- ${item}`).join('\n');
+  // Unterpunkte bleiben eingerückt, sonst würden sie beim Speichern zu eigenen Punkten.
+  const indentSubItems = (item: string): string =>
+    item.split('\n').map((line, index) => (index > 0 && BULLET.test(line) ? `  ${line}` : line)).join('\n');
+  if (items.length <= 1) return indentSubItems(items[0] ?? '');
+  return items.map((item) => `- ${indentSubItems(item)}`).join('\n');
 }
 
 /** Ein Punkt in einer Zeile, z. B. für die Blocker-Liste. */
